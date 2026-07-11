@@ -5,10 +5,11 @@ from __future__ import annotations
 from typing import Protocol
 
 from haystack import Pipeline
-from haystack.components.embedders import OpenAIDocumentEmbedder
+from haystack.components.embedders import OpenAIDocumentEmbedder, OpenAITextEmbedder
 from haystack.components.writers import DocumentWriter
 from haystack.document_stores.types import DocumentStore, DuplicatePolicy
 from haystack.utils import Secret
+from haystack_integrations.components.retrievers.pinecone import PineconeEmbeddingRetriever
 
 from config import Settings
 from models import ChatMessage
@@ -30,15 +31,18 @@ class SummarizationPipeline(Protocol):
         ...
 
 
-def _build_document_embedder_kwargs(settings: Settings) -> dict[str, object]:
+def _build_openai_embedder_kwargs(settings: Settings) -> dict[str, object]:
     kwargs: dict[str, object] = {
         "api_key": Secret.from_env_var("OPENAI_API_KEY"),
         "model": settings.embedding_model,
-        "progress_bar": False,
     }
     if settings.api_base_url is not None:
         kwargs["api_base_url"] = settings.api_base_url
     return kwargs
+
+
+def _build_document_embedder_kwargs(settings: Settings) -> dict[str, object]:
+    return {**_build_openai_embedder_kwargs(settings), "progress_bar": False}
 
 
 def create_indexing_pipeline(settings: Settings, document_store: DocumentStore) -> Pipeline:
@@ -53,6 +57,21 @@ def create_indexing_pipeline(settings: Settings, document_store: DocumentStore) 
     pipeline.add_component("document_embedder", document_embedder)
     pipeline.add_component("writer", writer)
     pipeline.connect("document_embedder.documents", "writer.documents")
+    return pipeline
+
+
+def create_query_pipeline(settings: Settings, document_store: DocumentStore) -> Pipeline:
+    """Build the query/retrieval Haystack pipeline."""
+    text_embedder = OpenAITextEmbedder(**_build_openai_embedder_kwargs(settings))
+    retriever = PineconeEmbeddingRetriever(
+        document_store=document_store,
+        top_k=settings.retrieval_top_k,
+    )
+
+    pipeline = Pipeline()
+    pipeline.add_component("text_embedder", text_embedder)
+    pipeline.add_component("retriever", retriever)
+    pipeline.connect("text_embedder.embedding", "retriever.query_embedding")
     return pipeline
 
 

@@ -18,6 +18,18 @@ Telegram bot for a group chat that indexes messages, retrieves relevant context,
 
 **Stage 2B live indexing smoke** completed: direct OpenAI embeddings verified with `text-embedding-3-small`; Pinecone preflight PASS; exact document verification PASS; embedding dimension 1536 verified; smoke-document cleanup PASS. Live smoke uses namespace `haystack-team-chat-homework`.
 
+**Stage 3A offline query/retrieval pipeline** is implemented:
+
+```text
+Query
+→ OpenAITextEmbedder
+→ PineconeEmbeddingRetriever
+→ chat_id + session_id filters
+→ validated Documents
+```
+
+Retrieval is isolated by chat and session metadata. Live retrieval smoke has not been run yet.
+
 Query, summarization, and Telegram handlers are not implemented yet.
 
 The project uses the direct OpenAI API by default. `OPENAI_BASE_URL` is optional and only needed for a custom OpenAI-compatible proxy endpoint.

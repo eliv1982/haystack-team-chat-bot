@@ -16,8 +16,10 @@ PYTHON_MODULES = (
     "documents",
     "document_store",
     "pinecone_preflight",
+    "retrieval_filters",
     "pipelines",
     "indexing_service",
+    "retrieval_service",
     "session_store",
     "bot",
 )
@@ -85,3 +87,8 @@ def test_env_file_is_ignored_by_git() -> None:
         check=False,
     )
     assert result.returncode == 0, ".env must be ignored by git"
+
+
+def test_stage_3a_runtime_modules_exist() -> None:
+    assert (PROJECT_ROOT / "retrieval_filters.py").is_file()
+    assert (PROJECT_ROOT / "retrieval_service.py").is_file()

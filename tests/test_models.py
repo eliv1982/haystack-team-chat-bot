@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from models import ChatMessage, InvalidChatMessageError
+from models import ChatMessage, InvalidChatMessageError, InvalidRetrievalRequestError, RetrievalRequest
 
 
 def test_valid_chat_message(sample_message: ChatMessage) -> None:
@@ -128,3 +128,60 @@ def test_whitespace_username_becomes_none() -> None:
     )
 
     assert message.username is None
+
+
+def test_valid_retrieval_request() -> None:
+    request = RetrievalRequest(
+        query="What did Alice say?",
+        chat_id=-1001234567890,
+        session_id="chat:-1001234567890",
+    )
+
+    assert request.query == "What did Alice say?"
+    assert request.chat_id == -1001234567890
+    assert request.session_id == "chat:-1001234567890"
+
+
+def test_retrieval_request_allows_negative_group_chat_id() -> None:
+    request = RetrievalRequest(
+        query="status update",
+        chat_id=-999_000_001,
+        session_id="session-1",
+    )
+
+    assert request.chat_id == -999_000_001
+
+
+def test_retrieval_request_rejects_bool_chat_id() -> None:
+    with pytest.raises(InvalidRetrievalRequestError, match="chat_id"):
+        RetrievalRequest(query="hello", chat_id=True, session_id="session-1")
+
+
+@pytest.mark.parametrize("chat_id", ["-100", 1.5, None])
+def test_retrieval_request_rejects_non_int_chat_id(chat_id: object) -> None:
+    with pytest.raises(InvalidRetrievalRequestError, match="chat_id"):
+        RetrievalRequest(query="hello", chat_id=chat_id, session_id="session-1")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("query", ["", "   "])
+def test_retrieval_request_rejects_empty_query(query: str) -> None:
+    with pytest.raises(InvalidRetrievalRequestError, match="query"):
+        RetrievalRequest(query=query, chat_id=-100, session_id="session-1")
+
+
+def test_retrieval_request_trims_query() -> None:
+    request = RetrievalRequest(query="  hello team  ", chat_id=-100, session_id="session-1")
+
+    assert request.query == "hello team"
+
+
+@pytest.mark.parametrize("session_id", ["", "   "])
+def test_retrieval_request_rejects_empty_session_id(session_id: str) -> None:
+    with pytest.raises(InvalidRetrievalRequestError, match="session_id"):
+        RetrievalRequest(query="hello", chat_id=-100, session_id=session_id)
+
+
+def test_retrieval_request_trims_session_id() -> None:
+    request = RetrievalRequest(query="hello", chat_id=-100, session_id="  session-1  ")
+
+    assert request.session_id == "session-1"

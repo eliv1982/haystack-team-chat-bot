@@ -10,18 +10,33 @@ class InvalidChatMessageError(ValueError):
     """Raised when a chat message has invalid field values."""
 
 
-def _validate_int_field(value: object, name: str, *, positive: bool) -> int:
+class InvalidRetrievalRequestError(ValueError):
+    """Raised when a retrieval request has invalid field values."""
+
+
+def _validate_int_field(
+    value: object,
+    name: str,
+    *,
+    positive: bool,
+    error_type: type[ValueError] = InvalidChatMessageError,
+) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
-        raise InvalidChatMessageError(f"{name} must be an integer, not bool")
+        raise error_type(f"{name} must be an integer, not bool")
     if positive and value <= 0:
-        raise InvalidChatMessageError(f"{name} must be a positive integer")
+        raise error_type(f"{name} must be a positive integer")
     return value
 
 
-def _validate_non_empty_text(value: str, name: str) -> str:
+def _validate_non_empty_text(
+    value: str,
+    name: str,
+    *,
+    error_type: type[ValueError] = InvalidChatMessageError,
+) -> str:
     normalized = value.strip()
     if not normalized:
-        raise InvalidChatMessageError(f"{name} must not be empty")
+        raise error_type(f"{name} must not be empty")
     return normalized
 
 
@@ -62,3 +77,38 @@ class ChatMessage:
                 "username",
                 normalized_username if normalized_username else None,
             )
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalRequest:
+    """A scoped retrieval query for a specific chat session."""
+
+    query: str
+    chat_id: int
+    session_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "query",
+            _validate_non_empty_text(self.query, "query", error_type=InvalidRetrievalRequestError),
+        )
+        object.__setattr__(
+            self,
+            "chat_id",
+            _validate_int_field(
+                self.chat_id,
+                "chat_id",
+                positive=False,
+                error_type=InvalidRetrievalRequestError,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "session_id",
+            _validate_non_empty_text(
+                self.session_id,
+                "session_id",
+                error_type=InvalidRetrievalRequestError,
+            ),
+        )
