@@ -46,7 +46,9 @@ SummarizationRequest
 → SummarizationResult
 ```
 
-The LLM receives only documents that passed chat/session validation. The prompt distinguishes facts, proposals, decisions, and action items. Live summarization has not been run yet.
+The LLM receives only documents that passed chat/session validation. The prompt distinguishes facts, proposals, decisions, and action items.
+
+**Stage 4B live grounded summarization** completed: one filtered retrieval and one LLM generation verified; final summary contained positions, decision and action items; foreign session/chat facts were excluded; exact cleanup completed. All three required pipelines are live-verified. Telegram integration remains pending.
 
 Query, summarization delivery, and Telegram handlers are not implemented yet.
 
