@@ -20,6 +20,8 @@ PYTHON_MODULES = (
     "pipelines",
     "indexing_service",
     "retrieval_service",
+    "summarization_prompt",
+    "summarization_service",
     "session_store",
     "bot",
 )
@@ -92,3 +94,15 @@ def test_env_file_is_ignored_by_git() -> None:
 def test_stage_3a_runtime_modules_exist() -> None:
     assert (PROJECT_ROOT / "retrieval_filters.py").is_file()
     assert (PROJECT_ROOT / "retrieval_service.py").is_file()
+
+
+def test_stage_4a_runtime_modules_exist() -> None:
+    assert (PROJECT_ROOT / "summarization_prompt.py").is_file()
+    assert (PROJECT_ROOT / "summarization_service.py").is_file()
+
+
+def test_bot_does_not_start_polling() -> None:
+    import bot
+
+    with pytest.raises(NotImplementedError, match="polling"):
+        bot.main()

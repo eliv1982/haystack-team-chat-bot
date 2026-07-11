@@ -6,7 +6,16 @@ from datetime import datetime, timezone
 
 import pytest
 
-from models import ChatMessage, InvalidChatMessageError, InvalidRetrievalRequestError, RetrievalRequest
+from models import (
+    ChatMessage,
+    InvalidChatMessageError,
+    InvalidRetrievalRequestError,
+    InvalidSummarizationRequestError,
+    InvalidSummarizationResultError,
+    RetrievalRequest,
+    SummarizationRequest,
+    SummarizationResult,
+)
 
 
 def test_valid_chat_message(sample_message: ChatMessage) -> None:
@@ -185,3 +194,165 @@ def test_retrieval_request_trims_session_id() -> None:
     request = RetrievalRequest(query="hello", chat_id=-100, session_id="  session-1  ")
 
     assert request.session_id == "session-1"
+
+
+def test_valid_summarization_request() -> None:
+    request = SummarizationRequest(
+        context_query="What was decided about the release?",
+        instruction="Подготовь краткое резюме обсуждения",
+        chat_id=-1001234567890,
+        session_id="chat:-1001234567890",
+    )
+
+    assert request.context_query == "What was decided about the release?"
+    assert request.instruction == "Подготовь краткое резюме обсуждения"
+    assert request.chat_id == -1001234567890
+    assert request.session_id == "chat:-1001234567890"
+
+
+def test_summarization_request_allows_negative_group_chat_id() -> None:
+    request = SummarizationRequest(
+        context_query="status",
+        instruction="Summarize",
+        chat_id=-999_000_001,
+        session_id="session-1",
+    )
+
+    assert request.chat_id == -999_000_001
+
+
+def test_summarization_request_rejects_bool_chat_id() -> None:
+    with pytest.raises(InvalidSummarizationRequestError, match="chat_id"):
+        SummarizationRequest(
+            context_query="status",
+            instruction="Summarize",
+            chat_id=True,
+            session_id="session-1",
+        )
+
+
+@pytest.mark.parametrize("chat_id", ["-100", 1.5, None])
+def test_summarization_request_rejects_non_int_chat_id(chat_id: object) -> None:
+    with pytest.raises(InvalidSummarizationRequestError, match="chat_id"):
+        SummarizationRequest(
+            context_query="status",
+            instruction="Summarize",
+            chat_id=chat_id,
+            session_id="session-1",
+        )  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("field_name,field_value", [("context_query", ""), ("context_query", "   ")])
+def test_summarization_request_rejects_empty_context_query(field_name: str, field_value: str) -> None:
+    with pytest.raises(InvalidSummarizationRequestError, match=field_name):
+        SummarizationRequest(
+            context_query=field_value if field_name == "context_query" else "status",
+            instruction="Summarize",
+            chat_id=-100,
+            session_id="session-1",
+        )
+
+
+def test_summarization_request_trims_context_query() -> None:
+    request = SummarizationRequest(
+        context_query="  release status  ",
+        instruction="Summarize",
+        chat_id=-100,
+        session_id="session-1",
+    )
+
+    assert request.context_query == "release status"
+
+
+@pytest.mark.parametrize("instruction", ["", "   "])
+def test_summarization_request_rejects_empty_instruction(instruction: str) -> None:
+    with pytest.raises(InvalidSummarizationRequestError, match="instruction"):
+        SummarizationRequest(
+            context_query="status",
+            instruction=instruction,
+            chat_id=-100,
+            session_id="session-1",
+        )
+
+
+def test_summarization_request_trims_instruction() -> None:
+    request = SummarizationRequest(
+        context_query="status",
+        instruction="  Summarize discussion  ",
+        chat_id=-100,
+        session_id="session-1",
+    )
+
+    assert request.instruction == "Summarize discussion"
+
+
+@pytest.mark.parametrize("session_id", ["", "   "])
+def test_summarization_request_rejects_empty_session_id(session_id: str) -> None:
+    with pytest.raises(InvalidSummarizationRequestError, match="session_id"):
+        SummarizationRequest(
+            context_query="status",
+            instruction="Summarize",
+            chat_id=-100,
+            session_id=session_id,
+        )
+
+
+def test_summarization_request_trims_session_id() -> None:
+    request = SummarizationRequest(
+        context_query="status",
+        instruction="Summarize",
+        chat_id=-100,
+        session_id="  session-1  ",
+    )
+
+    assert request.session_id == "session-1"
+
+
+def test_valid_summarization_result() -> None:
+    result = SummarizationResult(
+        text="Тема\nКлючевые позиции",
+        source_document_ids=("doc-1", "doc-2"),
+    )
+
+    assert result.text == "Тема\nКлючевые позиции"
+    assert result.source_document_ids == ("doc-1", "doc-2")
+
+
+def test_summarization_result_trims_text() -> None:
+    result = SummarizationResult(text="  Summary text  ", source_document_ids=("doc-1",))
+
+    assert result.text == "Summary text"
+
+
+@pytest.mark.parametrize("text", ["", "   "])
+def test_summarization_result_rejects_empty_text(text: str) -> None:
+    with pytest.raises(InvalidSummarizationResultError, match="text"):
+        SummarizationResult(text=text, source_document_ids=("doc-1",))
+
+
+def test_summarization_result_rejects_empty_source_ids() -> None:
+    with pytest.raises(InvalidSummarizationResultError, match="source_document_ids"):
+        SummarizationResult(text="Summary", source_document_ids=())
+
+
+@pytest.mark.parametrize("document_id", ["", "   "])
+def test_summarization_result_rejects_empty_source_id(document_id: str) -> None:
+    with pytest.raises(InvalidSummarizationResultError, match="source document id"):
+        SummarizationResult(text="Summary", source_document_ids=(document_id,))
+
+
+def test_summarization_result_rejects_duplicate_source_ids() -> None:
+    with pytest.raises(InvalidSummarizationResultError, match="duplicates"):
+        SummarizationResult(text="Summary", source_document_ids=("doc-1", "doc-1"))
+
+
+def test_summarization_result_preserves_source_id_order() -> None:
+    result = SummarizationResult(text="Summary", source_document_ids=("doc-3", "doc-1", "doc-2"))
+
+    assert result.source_document_ids == ("doc-3", "doc-1", "doc-2")
+
+
+def test_summarization_result_is_immutable() -> None:
+    result = SummarizationResult(text="Summary", source_document_ids=("doc-1",))
+
+    assert isinstance(result.source_document_ids, tuple)

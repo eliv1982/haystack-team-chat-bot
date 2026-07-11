@@ -14,6 +14,14 @@ class InvalidRetrievalRequestError(ValueError):
     """Raised when a retrieval request has invalid field values."""
 
 
+class InvalidSummarizationRequestError(ValueError):
+    """Raised when a summarization request has invalid field values."""
+
+
+class InvalidSummarizationResultError(ValueError):
+    """Raised when a summarization result has invalid field values."""
+
+
 def _validate_int_field(
     value: object,
     name: str,
@@ -112,3 +120,85 @@ class RetrievalRequest:
                 error_type=InvalidRetrievalRequestError,
             ),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class SummarizationRequest:
+    """A scoped summarization request with retrieval and instruction boundaries."""
+
+    context_query: str
+    instruction: str
+    chat_id: int
+    session_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "context_query",
+            _validate_non_empty_text(
+                self.context_query,
+                "context_query",
+                error_type=InvalidSummarizationRequestError,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "instruction",
+            _validate_non_empty_text(
+                self.instruction,
+                "instruction",
+                error_type=InvalidSummarizationRequestError,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "chat_id",
+            _validate_int_field(
+                self.chat_id,
+                "chat_id",
+                positive=False,
+                error_type=InvalidSummarizationRequestError,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "session_id",
+            _validate_non_empty_text(
+                self.session_id,
+                "session_id",
+                error_type=InvalidSummarizationRequestError,
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SummarizationResult:
+    """Validated summarization output with source document provenance."""
+
+    text: str
+    source_document_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "text",
+            _validate_non_empty_text(
+                self.text,
+                "text",
+                error_type=InvalidSummarizationResultError,
+            ),
+        )
+        if not self.source_document_ids:
+            raise InvalidSummarizationResultError("source_document_ids must not be empty")
+
+        seen_ids: set[str] = set()
+        normalized_ids: list[str] = []
+        for document_id in self.source_document_ids:
+            if not isinstance(document_id, str) or not document_id.strip():
+                raise InvalidSummarizationResultError("source document id must be a non-empty string")
+            if document_id in seen_ids:
+                raise InvalidSummarizationResultError("source_document_ids must not contain duplicates")
+            seen_ids.add(document_id)
+            normalized_ids.append(document_id)
+
+        object.__setattr__(self, "source_document_ids", tuple(normalized_ids))

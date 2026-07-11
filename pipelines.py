@@ -5,7 +5,9 @@ from __future__ import annotations
 from typing import Protocol
 
 from haystack import Pipeline
+from haystack.components.builders import ChatPromptBuilder
 from haystack.components.embedders import OpenAIDocumentEmbedder, OpenAITextEmbedder
+from haystack.components.generators.chat import OpenAIChatGenerator
 from haystack.components.writers import DocumentWriter
 from haystack.document_stores.types import DocumentStore, DuplicatePolicy
 from haystack.utils import Secret
@@ -13,6 +15,7 @@ from haystack_integrations.components.retrievers.pinecone import PineconeEmbeddi
 
 from config import Settings
 from models import ChatMessage
+from summarization_prompt import SUMMARIZATION_PROMPT_TEMPLATE
 
 
 class RetrievalPipeline(Protocol):
@@ -45,6 +48,16 @@ def _build_document_embedder_kwargs(settings: Settings) -> dict[str, object]:
     return {**_build_openai_embedder_kwargs(settings), "progress_bar": False}
 
 
+def _build_openai_chat_generator_kwargs(settings: Settings) -> dict[str, object]:
+    kwargs: dict[str, object] = {
+        "api_key": Secret.from_env_var("OPENAI_API_KEY"),
+        "model": settings.openai_model,
+    }
+    if settings.api_base_url is not None:
+        kwargs["api_base_url"] = settings.api_base_url
+    return kwargs
+
+
 def create_indexing_pipeline(settings: Settings, document_store: DocumentStore) -> Pipeline:
     """Build the indexing Haystack pipeline."""
     document_embedder = OpenAIDocumentEmbedder(**_build_document_embedder_kwargs(settings))
@@ -72,6 +85,21 @@ def create_query_pipeline(settings: Settings, document_store: DocumentStore) -> 
     pipeline.add_component("text_embedder", text_embedder)
     pipeline.add_component("retriever", retriever)
     pipeline.connect("text_embedder.embedding", "retriever.query_embedding")
+    return pipeline
+
+
+def create_summarization_pipeline(settings: Settings) -> Pipeline:
+    """Build the summarization Haystack pipeline."""
+    prompt_builder = ChatPromptBuilder(
+        template=list(SUMMARIZATION_PROMPT_TEMPLATE),
+        required_variables=["documents", "instruction"],
+    )
+    llm = OpenAIChatGenerator(**_build_openai_chat_generator_kwargs(settings))
+
+    pipeline = Pipeline()
+    pipeline.add_component("prompt_builder", prompt_builder)
+    pipeline.add_component("llm", llm)
+    pipeline.connect("prompt_builder.prompt", "llm.messages")
     return pipeline
 
 

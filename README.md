@@ -32,7 +32,23 @@ Retrieval is isolated by chat and session metadata.
 
 **Stage 3B live filtered retrieval** completed: semantic retrieval verified; exact `chat_id + session_id` isolation verified; contradictory records from another session and another chat were excluded; exact cleanup completed.
 
-Query, summarization, and Telegram handlers are not implemented yet.
+**Stage 4A offline summarization pipeline** is implemented. The project now has three Haystack pipelines:
+
+1. indexing;
+2. query/retrieval;
+3. summarization.
+
+```text
+SummarizationRequest
+→ validated RetrievalService context
+→ ChatPromptBuilder
+→ OpenAIChatGenerator
+→ SummarizationResult
+```
+
+The LLM receives only documents that passed chat/session validation. The prompt distinguishes facts, proposals, decisions, and action items. Live summarization has not been run yet.
+
+Query, summarization delivery, and Telegram handlers are not implemented yet.
 
 The project uses the direct OpenAI API by default. `OPENAI_BASE_URL` is optional and only needed for a custom OpenAI-compatible proxy endpoint.
 
