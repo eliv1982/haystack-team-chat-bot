@@ -1,0 +1,24 @@
+# Environment and secrets
+.env
+!.env.example
+
+# Virtual environment
+.venv/
+
+# Python bytecode and caches
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS temporary files
+.DS_Store
+Thumbs.db
+desktop.ini

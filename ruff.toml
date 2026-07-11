@@ -1,0 +1,4 @@
+exclude = [
+    ".venv",
+    "Pipeline example.ipynb",
+]
