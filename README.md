@@ -28,7 +28,9 @@ Query
 → validated Documents
 ```
 
-Retrieval is isolated by chat and session metadata. Live retrieval smoke has not been run yet.
+Retrieval is isolated by chat and session metadata.
+
+**Stage 3B live filtered retrieval** completed: semantic retrieval verified; exact `chat_id + session_id` isolation verified; contradictory records from another session and another chat were excluded; exact cleanup completed.
 
 Query, summarization, and Telegram handlers are not implemented yet.
 
