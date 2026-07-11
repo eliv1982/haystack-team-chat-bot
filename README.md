@@ -48,9 +48,20 @@ SummarizationRequest
 
 The LLM receives only documents that passed chat/session validation. The prompt distinguishes facts, proposals, decisions, and action items.
 
-**Stage 4B live grounded summarization** completed: one filtered retrieval and one LLM generation verified; final summary contained positions, decision and action items; foreign session/chat facts were excluded; exact cleanup completed. All three required pipelines are live-verified. Telegram integration remains pending.
+**Stage 4B live grounded summarization** completed: one filtered retrieval and one LLM generation verified; final summary contained positions, decision and action items; foreign session/chat facts were excluded; exact cleanup completed. All three required pipelines are live-verified.
 
-Query, summarization delivery, and Telegram handlers are not implemented yet.
+**Stage 5A offline Telegram foundation** is implemented:
+
+```text
+Telegram Message
+→ telegram adapter
+→ domain ChatMessage
+→ thread-safe InMemorySessionStore
+```
+
+The TeleBot factory is implemented, but polling and handlers are not wired yet. Session state is in-memory only. No live Telegram test has been run yet.
+
+Query, summarization delivery, and Telegram command handlers are not implemented yet.
 
 The project uses the direct OpenAI API by default. `OPENAI_BASE_URL` is optional and only needed for a custom OpenAI-compatible proxy endpoint.
 

@@ -23,6 +23,8 @@ PYTHON_MODULES = (
     "summarization_prompt",
     "summarization_service",
     "session_store",
+    "telegram_adapter",
+    "telegram_bot",
     "bot",
 )
 
@@ -99,6 +101,22 @@ def test_stage_3a_runtime_modules_exist() -> None:
 def test_stage_4a_runtime_modules_exist() -> None:
     assert (PROJECT_ROOT / "summarization_prompt.py").is_file()
     assert (PROJECT_ROOT / "summarization_service.py").is_file()
+
+
+def test_stage_5a_runtime_modules_exist() -> None:
+    assert (PROJECT_ROOT / "telegram_adapter.py").is_file()
+    assert (PROJECT_ROOT / "telegram_bot.py").is_file()
+
+
+def test_stage_5a_imports_do_not_create_global_bot_or_store() -> None:
+    import telegram_adapter
+    import telegram_bot
+
+    assert not hasattr(telegram_bot, "bot")
+    assert not hasattr(telegram_bot, "store")
+    assert not hasattr(telegram_adapter, "bot")
+    assert not hasattr(telegram_adapter, "store")
+    assert not hasattr(telegram_adapter, "session_store")
 
 
 def test_bot_does_not_start_polling() -> None:
