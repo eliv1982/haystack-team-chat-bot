@@ -17,7 +17,6 @@ from config import (
 REQUIRED_ENV = {
     "TELEGRAM_BOT_TOKEN": "test-telegram-token",
     "OPENAI_API_KEY": "test-openai-key",
-    "OPENAI_BASE_URL": "https://api.example.com/v1",
     "OPENAI_MODEL": "test-chat-model",
     "EMBEDDING_MODEL": "test-embedding-model",
     "PINECONE_API_KEY": "test-pinecone-key",
@@ -67,6 +66,7 @@ def test_empty_required_variable(clean_config_env: None, monkeypatch: pytest.Mon
 
 def test_load_full_settings(clean_config_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
     _set_env(monkeypatch, REQUIRED_ENV)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.example.com/v1")
     monkeypatch.setenv("PINECONE_NAMESPACE", "custom-namespace")
     monkeypatch.setenv("PINECONE_DIMENSION", "2048")
     monkeypatch.setenv("PINECONE_METRIC", "dotproduct")
@@ -93,6 +93,7 @@ def test_defaults_for_optional_values(clean_config_env: None, monkeypatch: pytes
 
     settings = load_settings(dotenv_path=None)
 
+    assert settings.api_base_url is None
     assert settings.pinecone_namespace == DEFAULT_PINECONE_NAMESPACE
     assert settings.pinecone_dimension == DEFAULT_PINECONE_DIMENSION
     assert settings.pinecone_metric == DEFAULT_PINECONE_METRIC
@@ -159,7 +160,35 @@ def test_error_messages_do_not_reveal_secret_values(
     assert secret_value not in message
 
 
-def test_trimmed_required_values(clean_config_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_missing_openai_base_url_is_allowed(
+    clean_config_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_env(monkeypatch, REQUIRED_ENV)
+
+    settings = load_settings(dotenv_path=None)
+
+    assert settings.api_base_url is None
+
+
+@pytest.mark.parametrize("raw_value", ["", "   "])
+def test_empty_or_whitespace_openai_base_url_normalizes_to_none(
+    clean_config_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    raw_value: str,
+) -> None:
+    _set_env(monkeypatch, REQUIRED_ENV)
+    monkeypatch.setenv("OPENAI_BASE_URL", raw_value)
+
+    settings = load_settings(dotenv_path=None)
+
+    assert settings.api_base_url is None
+
+
+def test_trimmed_custom_openai_base_url_is_preserved(
+    clean_config_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _set_env(monkeypatch, REQUIRED_ENV)
     monkeypatch.setenv("OPENAI_BASE_URL", "  https://api.example.com/v1  ")
 

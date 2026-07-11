@@ -15,6 +15,7 @@ PYTHON_MODULES = (
     "models",
     "documents",
     "document_store",
+    "pinecone_preflight",
     "pipelines",
     "indexing_service",
     "session_store",
@@ -76,9 +77,6 @@ def test_env_example_is_not_ignored_by_git() -> None:
 
 
 def test_env_file_is_ignored_by_git() -> None:
-    env_file = PROJECT_ROOT / ".env"
-    assert not env_file.exists(), ".env must not be created in Stage 1"
-
     result = subprocess.run(
         ["git", "check-ignore", "-v", ".env"],
         cwd=PROJECT_ROOT,

@@ -16,7 +16,11 @@ Telegram bot for a group chat that indexes messages, retrieves relevant context,
 
 `ChatMessage -> Haystack Document -> OpenAIDocumentEmbedder -> DocumentWriter -> PineconeDocumentStore`
 
-Retrieval, summarization, Telegram handlers, and live Pinecone/OpenAI verification are not implemented yet. No live API calls to OpenAI, Pinecone, or Telegram have been performed in this stage.
+**Stage 2B live indexing smoke** completed: direct OpenAI embeddings verified with `text-embedding-3-small`; Pinecone preflight PASS; exact document verification PASS; embedding dimension 1536 verified; smoke-document cleanup PASS. Live smoke uses namespace `haystack-team-chat-homework`.
+
+Query, summarization, and Telegram handlers are not implemented yet.
+
+The project uses the direct OpenAI API by default. `OPENAI_BASE_URL` is optional and only needed for a custom OpenAI-compatible proxy endpoint.
 
 ## Requirements
 

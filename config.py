@@ -28,7 +28,7 @@ class Settings:
 
     telegram_bot_token: str
     openai_api_key: str
-    api_base_url: str
+    api_base_url: str | None
     openai_model: str
     embedding_model: str
     pinecone_api_key: str
@@ -56,6 +56,16 @@ def _optional_non_empty_str(name: str, *, default: str) -> str:
     value = raw.strip()
     if not value:
         return default
+    return value
+
+
+def _optional_base_url(name: str) -> str | None:
+    raw = getenv(name)
+    if raw is None:
+        return None
+    value = raw.strip()
+    if not value:
+        return None
     return value
 
 
@@ -109,7 +119,7 @@ def load_settings(*, dotenv_path: str | None = ".env") -> Settings:
     return Settings(
         telegram_bot_token=_require_non_empty_str("TELEGRAM_BOT_TOKEN"),
         openai_api_key=_require_non_empty_str("OPENAI_API_KEY"),
-        api_base_url=_require_non_empty_str("OPENAI_BASE_URL"),
+        api_base_url=_optional_base_url("OPENAI_BASE_URL"),
         openai_model=_require_non_empty_str("OPENAI_MODEL"),
         embedding_model=_require_non_empty_str("EMBEDDING_MODEL"),
         pinecone_api_key=_require_non_empty_str("PINECONE_API_KEY"),

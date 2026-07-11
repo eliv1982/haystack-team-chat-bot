@@ -16,10 +16,28 @@ from config import Settings
 from indexing_service import IndexingService, IndexingServiceError
 from models import ChatMessage
 from pipelines import (
+    _build_document_embedder_kwargs,
     build_retrieval_pipeline,
     build_summarization_pipeline,
     create_indexing_pipeline,
 )
+
+
+@pytest.fixture
+def direct_openai_settings() -> Settings:
+    return Settings(
+        telegram_bot_token="test-telegram-token",
+        openai_api_key="test-openai-key",
+        api_base_url=None,
+        openai_model="test-chat-model",
+        embedding_model="test-embedding-model",
+        pinecone_api_key="test-pinecone-key",
+        pinecone_index_name="test-index",
+        pinecone_namespace="haystack-team-chat-homework",
+        pinecone_dimension=1536,
+        pinecone_metric="cosine",
+        retrieval_top_k=50,
+    )
 
 
 @pytest.fixture
@@ -48,6 +66,36 @@ def test_indexing_pipeline_has_expected_components(
     pipeline = create_indexing_pipeline(settings, document_store)
 
     assert set(pipeline.graph.nodes) == {"document_embedder", "writer"}
+
+
+def test_document_embedder_kwargs_omit_api_base_url_for_direct_openai(
+    direct_openai_settings: Settings,
+) -> None:
+    kwargs = _build_document_embedder_kwargs(direct_openai_settings)
+
+    assert "api_base_url" not in kwargs
+    assert kwargs["model"] == direct_openai_settings.embedding_model
+    assert kwargs["progress_bar"] is False
+
+
+def test_document_embedder_kwargs_include_custom_api_base_url(
+    settings: Settings,
+) -> None:
+    kwargs = _build_document_embedder_kwargs(settings)
+
+    assert kwargs["api_base_url"] == settings.api_base_url
+
+
+def test_indexing_pipeline_embedder_uses_model_without_custom_base_url_for_direct_openai(
+    direct_openai_settings: Settings,
+    openai_env: None,
+) -> None:
+    pipeline = create_indexing_pipeline(direct_openai_settings, InMemoryDocumentStore())
+
+    embedder = pipeline.get_component("document_embedder")
+    assert embedder.model == direct_openai_settings.embedding_model
+    assert embedder.api_base_url is None
+    assert embedder.progress_bar is False
 
 
 def test_indexing_pipeline_embedder_uses_model_and_api_base_url(
@@ -89,6 +137,18 @@ def test_indexing_pipeline_connection_is_correct(
             "receiver": "writer.documents",
         }
     ]
+
+
+def test_indexing_pipeline_serializes_without_custom_base_url_for_direct_openai(
+    direct_openai_settings: Settings,
+    openai_env: None,
+) -> None:
+    pipeline = create_indexing_pipeline(direct_openai_settings, InMemoryDocumentStore())
+    serialized = json.dumps(pipeline.to_dict())
+
+    assert "api.example.com" not in serialized
+    assert "test-openai-key" not in serialized
+    assert '"env_vars": ["OPENAI_API_KEY"]' in serialized
 
 
 def test_indexing_pipeline_serializes_without_exposing_dummy_secret_values(

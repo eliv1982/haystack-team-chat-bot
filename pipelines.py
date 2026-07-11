@@ -30,14 +30,20 @@ class SummarizationPipeline(Protocol):
         ...
 
 
+def _build_document_embedder_kwargs(settings: Settings) -> dict[str, object]:
+    kwargs: dict[str, object] = {
+        "api_key": Secret.from_env_var("OPENAI_API_KEY"),
+        "model": settings.embedding_model,
+        "progress_bar": False,
+    }
+    if settings.api_base_url is not None:
+        kwargs["api_base_url"] = settings.api_base_url
+    return kwargs
+
+
 def create_indexing_pipeline(settings: Settings, document_store: DocumentStore) -> Pipeline:
     """Build the indexing Haystack pipeline."""
-    document_embedder = OpenAIDocumentEmbedder(
-        api_key=Secret.from_env_var("OPENAI_API_KEY"),
-        model=settings.embedding_model,
-        api_base_url=settings.api_base_url,
-        progress_bar=False,
-    )
+    document_embedder = OpenAIDocumentEmbedder(**_build_document_embedder_kwargs(settings))
     writer = DocumentWriter(
         document_store=document_store,
         policy=DuplicatePolicy.OVERWRITE,
