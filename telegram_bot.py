@@ -5,8 +5,20 @@ from __future__ import annotations
 import telebot
 
 from config import Settings
+from telegram_application import TelegramApplicationService
+from telegram_handlers import register_telegram_handlers
 
 
 def create_telegram_bot(settings: Settings) -> telebot.TeleBot:
     """Create a synchronous TeleBot instance from application settings."""
     return telebot.TeleBot(settings.telegram_bot_token)
+
+
+def create_configured_telegram_bot(
+    settings: Settings,
+    application_service: TelegramApplicationService,
+) -> telebot.TeleBot:
+    """Create a TeleBot with listening handlers registered."""
+    bot = create_telegram_bot(settings)
+    register_telegram_handlers(bot, application_service)
+    return bot

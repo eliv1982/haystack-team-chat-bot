@@ -61,7 +61,24 @@ Telegram Message
 
 The TeleBot factory is implemented, but polling and handlers are not wired yet. Session state is in-memory only. No live Telegram test has been run yet.
 
-Query, summarization delivery, and Telegram command handlers are not implemented yet.
+**Stage 5B offline listening flow** is implemented:
+
+```text
+/start_listening
+→ InMemorySessionStore
+
+group text
+→ Telegram adapter
+→ IndexingService
+→ message_count +1
+
+/stop_listening
+→ final session snapshot
+```
+
+Handlers `/start_listening`, ordinary group text capture, and `/stop_listening` are registered without polling. Ordinary messages are indexed before the session counter increments. Session state remains in-memory. The «Что думаешь?» summary handler is not implemented yet. No live Telegram test has been run yet.
+
+Query, summarization delivery, and the summary command handler are not implemented yet.
 
 The project uses the direct OpenAI API by default. `OPENAI_BASE_URL` is optional and only needed for a custom OpenAI-compatible proxy endpoint.
 

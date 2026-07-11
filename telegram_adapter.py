@@ -3,25 +3,28 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Final
 
 import telebot.types
 
 from models import ChatMessage
+
+GROUP_CHAT_TYPES: Final[frozenset[str]] = frozenset({"group", "supergroup"})
 
 
 class TelegramAdapterError(ValueError):
     """Raised when a Telegram message cannot be converted to a domain model."""
 
 
-def _normalize_username(username: str | None) -> str | None:
+def normalize_username(username: str | None) -> str | None:
     if username is None:
         return None
     normalized = username.strip().lstrip("@")
     return normalized if normalized else None
 
 
-def _build_author_fields(user: telebot.types.User) -> tuple[str, str | None]:
-    username = _normalize_username(user.username)
+def build_author_fields(user: telebot.types.User) -> tuple[str, str | None]:
+    username = normalize_username(user.username)
 
     name_parts: list[str] = []
     if user.first_name:
@@ -38,7 +41,7 @@ def _build_author_fields(user: telebot.types.User) -> tuple[str, str | None]:
     return f"user-{user.id}", username
 
 
-def _normalize_sent_at(date: object) -> datetime:
+def normalize_sent_at(date: object) -> datetime:
     if date is None:
         raise TelegramAdapterError("date is required")
     if isinstance(date, bool):
@@ -52,6 +55,22 @@ def _normalize_sent_at(date: object) -> datetime:
             raise TelegramAdapterError("date must be timezone-aware")
         return date.astimezone(timezone.utc)
     raise TelegramAdapterError(f"date has unsupported type: {type(date).__name__}")
+
+
+def is_telegram_command(text: str | None) -> bool:
+    if text is None:
+        return False
+    return text.lstrip().startswith("/")
+
+
+def require_group_chat_id(message: telebot.types.Message) -> int:
+    if message.chat is None:
+        raise TelegramAdapterError("message.chat is required")
+    if message.chat.type not in GROUP_CHAT_TYPES:
+        raise TelegramAdapterError("message.chat.type must be group or supergroup")
+    if message.chat.id is None:
+        raise TelegramAdapterError("message.chat.id is required")
+    return message.chat.id
 
 
 def telegram_text_message_to_chat_message(
@@ -82,8 +101,8 @@ def telegram_text_message_to_chat_message(
     if not isinstance(text, str) or not text.strip():
         raise TelegramAdapterError("message.text must be a non-empty string")
 
-    author_name, username = _build_author_fields(message.from_user)
-    sent_at = _normalize_sent_at(message.date)
+    author_name, username = build_author_fields(message.from_user)
+    sent_at = normalize_sent_at(message.date)
 
     return ChatMessage(
         chat_id=message.chat.id,

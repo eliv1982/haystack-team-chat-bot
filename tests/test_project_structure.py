@@ -24,6 +24,8 @@ PYTHON_MODULES = (
     "summarization_service",
     "session_store",
     "telegram_adapter",
+    "telegram_application",
+    "telegram_handlers",
     "telegram_bot",
     "bot",
 )
@@ -117,6 +119,26 @@ def test_stage_5a_imports_do_not_create_global_bot_or_store() -> None:
     assert not hasattr(telegram_adapter, "bot")
     assert not hasattr(telegram_adapter, "store")
     assert not hasattr(telegram_adapter, "session_store")
+
+
+def test_stage_5b_runtime_modules_exist() -> None:
+    assert (PROJECT_ROOT / "telegram_application.py").is_file()
+    assert (PROJECT_ROOT / "telegram_handlers.py").is_file()
+
+
+def test_stage_5b_imports_do_not_create_global_bot_store_or_service() -> None:
+    import telegram_application
+    import telegram_handlers
+
+    assert not hasattr(telegram_application, "bot")
+    assert not hasattr(telegram_application, "store")
+    assert not hasattr(telegram_application, "application_service")
+    assert not hasattr(telegram_handlers, "bot")
+    assert not hasattr(telegram_handlers, "application_service")
+
+    application_source = (PROJECT_ROOT / "telegram_application.py").read_text(encoding="utf-8")
+    assert "summarization_service" not in application_source
+    assert "SummarizationService" not in application_source
 
 
 def test_bot_does_not_start_polling() -> None:
