@@ -402,3 +402,35 @@ def test_slow_record_in_one_chat_does_not_block_stop_in_another(
     indexing_service.release.set()
     record_thread.join(timeout=5)
     assert not errors
+
+
+@pytest.mark.parametrize("text", ["Что думаешь?", "  что   думаешь?  "])
+def test_record_ignores_exact_summary_phrase(
+    application_service: TelegramApplicationService,
+    session_store: InMemorySessionStore,
+    indexing_service: MagicMock,
+    text: str,
+) -> None:
+    application_service.start_listening(_make_message(text="/start_listening"))
+
+    result = application_service.record_text_message(_make_message(text=text, message_id=43))
+
+    assert result is None
+    assert session_store.get_active_session(-1001234567890).message_count == 0
+    indexing_service.index_messages.assert_not_called()
+
+
+def test_record_similar_non_trigger_text_still_indexes(
+    application_service: TelegramApplicationService,
+    session_store: InMemorySessionStore,
+    indexing_service: MagicMock,
+) -> None:
+    application_service.start_listening(_make_message(text="/start_listening"))
+
+    updated = application_service.record_text_message(
+        _make_message(text="А что думаешь?", message_id=43)
+    )
+
+    assert updated is not None
+    assert updated.message_count == 1
+    indexing_service.index_messages.assert_called_once()

@@ -15,6 +15,7 @@ from telegram_adapter import (
     GROUP_CHAT_TYPES,
     TelegramAdapterError,
     build_author_fields,
+    is_summary_request_text,
     is_telegram_command,
     normalize_sent_at,
     telegram_text_message_to_chat_message,
@@ -87,6 +88,9 @@ class TelegramApplicationService:
         with self._chat_locks.lock_for(chat_id):
             active_session = self._session_store.get_active_session(chat_id)
             if active_session is None:
+                return None
+
+            if is_summary_request_text(message.text):
                 return None
 
             chat_message = telegram_text_message_to_chat_message(

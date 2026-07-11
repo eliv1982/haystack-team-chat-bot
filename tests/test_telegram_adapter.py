@@ -10,7 +10,7 @@ import pytest
 from telebot.types import Chat, Message, User
 
 from models import ChatMessage
-from telegram_adapter import TelegramAdapterError, telegram_text_message_to_chat_message
+from telegram_adapter import TelegramAdapterError, is_summary_request_text, telegram_text_message_to_chat_message
 
 
 def _make_message(
@@ -227,3 +227,41 @@ def test_adapter_does_not_call_api_methods() -> None:
 
     for method_name in ("get_me", "send_message", "get_updates"):
         assert not getattr(message, method_name, MagicMock()).called
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Что думаешь?",
+        "что думаешь?",
+        "  ЧТО   ДУМАЕШЬ?  ",
+    ],
+)
+def test_is_summary_request_text_accepts_normalized_phrases(text: str) -> None:
+    assert is_summary_request_text(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        None,
+        "",
+        "   ",
+        "Что думаешь",
+        "Что думаешь??",
+        "А что думаешь?",
+        "/что_думаешь",
+        "Prefix Что думаешь?",
+        "Что думаешь? suffix",
+        123,
+    ],
+)
+def test_is_summary_request_text_rejects_non_exact_phrases(text: object) -> None:
+    assert is_summary_request_text(text) is False
+
+
+def test_is_summary_request_text_does_not_mutate_input() -> None:
+    original = "  Что   думаешь?  "
+    text = original
+    is_summary_request_text(text)
+    assert text == original

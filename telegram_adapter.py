@@ -10,6 +10,7 @@ import telebot.types
 from models import ChatMessage
 
 GROUP_CHAT_TYPES: Final[frozenset[str]] = frozenset({"group", "supergroup"})
+_SUMMARY_REQUEST_PHRASE: Final[str] = "что думаешь?"
 
 
 class TelegramAdapterError(ValueError):
@@ -61,6 +62,15 @@ def is_telegram_command(text: str | None) -> bool:
     if text is None:
         return False
     return text.lstrip().startswith("/")
+
+
+def is_summary_request_text(text: object) -> bool:
+    if not isinstance(text, str):
+        return False
+    normalized = " ".join(text.strip().split()).casefold()
+    if not normalized:
+        return False
+    return normalized == _SUMMARY_REQUEST_PHRASE
 
 
 def require_group_chat_id(message: telebot.types.Message) -> int:

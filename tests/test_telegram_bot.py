@@ -86,14 +86,23 @@ def test_create_configured_telegram_bot_registers_handlers_once(
 ) -> None:
     mock_bot = MagicMock()
     application_service = MagicMock()
+    summary_application_service = MagicMock()
     with patch("telegram_bot.create_telegram_bot", return_value=mock_bot) as create_bot:
         with patch("telegram_bot.register_telegram_handlers") as register_handlers:
             from telegram_bot import create_configured_telegram_bot
 
-            bot = create_configured_telegram_bot(settings, application_service)
+            bot = create_configured_telegram_bot(
+                settings,
+                application_service,
+                summary_application_service,
+            )
 
     create_bot.assert_called_once_with(settings)
-    register_handlers.assert_called_once_with(mock_bot, application_service)
+    register_handlers.assert_called_once_with(
+        mock_bot,
+        application_service,
+        summary_application_service,
+    )
     assert bot is mock_bot
 
 
@@ -102,11 +111,16 @@ def test_create_configured_telegram_bot_does_not_poll_or_call_bot_api(
 ) -> None:
     mock_bot = MagicMock()
     application_service = MagicMock()
+    summary_application_service = MagicMock()
     with patch("telegram_bot.create_telegram_bot", return_value=mock_bot):
         with patch("telegram_bot.register_telegram_handlers"):
             from telegram_bot import create_configured_telegram_bot
 
-            create_configured_telegram_bot(settings, application_service)
+            create_configured_telegram_bot(
+                settings,
+                application_service,
+                summary_application_service,
+            )
 
     mock_bot.polling.assert_not_called()
     mock_bot.infinity_polling.assert_not_called()

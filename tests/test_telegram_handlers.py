@@ -8,9 +8,15 @@ from unittest.mock import MagicMock
 import pytest
 from telebot.types import Chat, Message, User
 
+from models import SummarizationResult
 from session_store import ListeningSession, NoActiveSessionError, SessionAlreadyActiveError
+from summarization_service import NoSummarizationContextError
 from telegram_application import UnsupportedTelegramChatError
-from telegram_handlers import _is_non_command_text_message, register_telegram_handlers
+from telegram_handlers import (
+    _is_non_command_non_summary_text_message,
+    _is_summary_request_message,
+    register_telegram_handlers,
+)
 
 
 def _utc_timestamp() -> int:
@@ -50,31 +56,48 @@ def application_service() -> MagicMock:
     return MagicMock()
 
 
-def test_register_message_handler_called_three_times_in_order(
+@pytest.fixture
+def summary_application_service() -> MagicMock:
+    return MagicMock()
+
+
+def _register(
     bot: MagicMock,
     application_service: MagicMock,
+    summary_application_service: MagicMock,
 ) -> None:
-    register_telegram_handlers(bot, application_service)
+    register_telegram_handlers(bot, application_service, summary_application_service)
 
-    assert bot.register_message_handler.call_count == 3
-    start_call, stop_call, ordinary_call = bot.register_message_handler.call_args_list
+
+def test_register_message_handler_called_four_times_in_order(
+    bot: MagicMock,
+    application_service: MagicMock,
+    summary_application_service: MagicMock,
+) -> None:
+    _register(bot, application_service, summary_application_service)
+
+    assert bot.register_message_handler.call_count == 4
+    start_call, stop_call, summary_call, ordinary_call = bot.register_message_handler.call_args_list
 
     assert start_call.kwargs["commands"] == ["start_listening"]
     assert stop_call.kwargs["commands"] == ["stop_listening"]
+    assert "commands" not in summary_call.kwargs
     assert "commands" not in ordinary_call.kwargs
 
-    for call in (start_call, stop_call, ordinary_call):
+    for call in (start_call, stop_call, summary_call, ordinary_call):
         assert call.kwargs["content_types"] == ["text"]
         assert call.kwargs["chat_types"] == ["group", "supergroup"]
 
-    assert ordinary_call.kwargs["func"] is _is_non_command_text_message
+    assert summary_call.kwargs["func"] is _is_summary_request_message
+    assert ordinary_call.kwargs["func"] is _is_non_command_non_summary_text_message
 
 
 def test_registration_does_not_call_bot_api(
     bot: MagicMock,
     application_service: MagicMock,
+    summary_application_service: MagicMock,
 ) -> None:
-    register_telegram_handlers(bot, application_service)
+    _register(bot, application_service, summary_application_service)
 
     bot.polling.assert_not_called()
     bot.infinity_polling.assert_not_called()
@@ -88,8 +111,9 @@ def _handler_at(index: int, bot: MagicMock) -> MagicMock:
 def test_start_callback_success_reply(
     bot: MagicMock,
     application_service: MagicMock,
+    summary_application_service: MagicMock,
 ) -> None:
-    register_telegram_handlers(bot, application_service)
+    _register(bot, application_service, summary_application_service)
     message = _make_message(text="/start_listening")
     session = ListeningSession(
         chat_id=-1001234567890,
@@ -110,8 +134,9 @@ def test_start_callback_success_reply(
 def test_start_callback_duplicate_reply(
     bot: MagicMock,
     application_service: MagicMock,
+    summary_application_service: MagicMock,
 ) -> None:
-    register_telegram_handlers(bot, application_service)
+    _register(bot, application_service, summary_application_service)
     message = _make_message(text="/start_listening")
     application_service.start_listening.side_effect = SessionAlreadyActiveError("duplicate")
 
@@ -123,8 +148,9 @@ def test_start_callback_duplicate_reply(
 def test_start_callback_unsupported_chat_reply(
     bot: MagicMock,
     application_service: MagicMock,
+    summary_application_service: MagicMock,
 ) -> None:
-    register_telegram_handlers(bot, application_service)
+    _register(bot, application_service, summary_application_service)
     message = _make_message(text="/start_listening")
     application_service.start_listening.side_effect = UnsupportedTelegramChatError("unsupported")
 
@@ -139,8 +165,9 @@ def test_start_callback_unsupported_chat_reply(
 def test_start_command_is_not_indexed(
     bot: MagicMock,
     application_service: MagicMock,
+    summary_application_service: MagicMock,
 ) -> None:
-    register_telegram_handlers(bot, application_service)
+    _register(bot, application_service, summary_application_service)
     message = _make_message(text="/start_listening")
     application_service.start_listening.return_value = MagicMock()
 
@@ -152,8 +179,9 @@ def test_start_command_is_not_indexed(
 def test_stop_callback_success_reply_contains_count(
     bot: MagicMock,
     application_service: MagicMock,
+    summary_application_service: MagicMock,
 ) -> None:
-    register_telegram_handlers(bot, application_service)
+    _register(bot, application_service, summary_application_service)
     message = _make_message(text="/stop_listening")
     stopped = ListeningSession(
         chat_id=-1001234567890,
@@ -177,8 +205,9 @@ def test_stop_callback_success_reply_contains_count(
 def test_stop_callback_zero_count(
     bot: MagicMock,
     application_service: MagicMock,
+    summary_application_service: MagicMock,
 ) -> None:
-    register_telegram_handlers(bot, application_service)
+    _register(bot, application_service, summary_application_service)
     message = _make_message(text="/stop_listening")
     application_service.stop_listening.return_value = ListeningSession(
         chat_id=-1001234567890,
@@ -200,8 +229,9 @@ def test_stop_callback_zero_count(
 def test_stop_callback_no_active_reply(
     bot: MagicMock,
     application_service: MagicMock,
+    summary_application_service: MagicMock,
 ) -> None:
-    register_telegram_handlers(bot, application_service)
+    _register(bot, application_service, summary_application_service)
     message = _make_message(text="/stop_listening")
     application_service.stop_listening.side_effect = NoActiveSessionError("missing")
 
@@ -213,15 +243,89 @@ def test_stop_callback_no_active_reply(
 def test_stop_does_not_call_summarization(
     bot: MagicMock,
     application_service: MagicMock,
+    summary_application_service: MagicMock,
 ) -> None:
-    register_telegram_handlers(bot, application_service)
+    _register(bot, application_service, summary_application_service)
     message = _make_message(text="/stop_listening")
     application_service.stop_listening.return_value = MagicMock(message_count=0)
 
     _handler_at(1, bot)(message)
 
     application_service.stop_listening.assert_called_once()
-    assert "summarize" not in application_service.method_calls
+    summary_application_service.summarize_active_discussion.assert_not_called()
+
+
+def test_summary_callback_sends_exact_result_text(
+    bot: MagicMock,
+    application_service: MagicMock,
+    summary_application_service: MagicMock,
+) -> None:
+    _register(bot, application_service, summary_application_service)
+    message = _make_message(text="Что думаешь?")
+    summary_application_service.summarize_active_discussion.return_value = SummarizationResult(
+        text="Итог обсуждения",
+        source_document_ids=("doc-1",),
+    )
+
+    _handler_at(2, bot)(message)
+
+    summary_application_service.summarize_active_discussion.assert_called_once_with(message)
+    bot.send_message.assert_called_once_with(message.chat.id, "Итог обсуждения")
+    application_service.stop_listening.assert_not_called()
+
+
+def test_summary_callback_no_active_reply(
+    bot: MagicMock,
+    application_service: MagicMock,
+    summary_application_service: MagicMock,
+) -> None:
+    _register(bot, application_service, summary_application_service)
+    message = _make_message(text="Что думаешь?")
+    summary_application_service.summarize_active_discussion.side_effect = NoActiveSessionError(
+        "missing"
+    )
+
+    _handler_at(2, bot)(message)
+
+    bot.send_message.assert_called_once_with(
+        message.chat.id,
+        "Активной записи обсуждения нет. Сначала используйте /start_listening.",
+    )
+
+
+def test_summary_callback_no_context_reply(
+    bot: MagicMock,
+    application_service: MagicMock,
+    summary_application_service: MagicMock,
+) -> None:
+    _register(bot, application_service, summary_application_service)
+    message = _make_message(text="Что думаешь?")
+    summary_application_service.summarize_active_discussion.side_effect = (
+        NoSummarizationContextError("empty")
+    )
+
+    _handler_at(2, bot)(message)
+
+    bot.send_message.assert_called_once_with(
+        message.chat.id,
+        "Пока недостаточно сохраненных сообщений для подведения итога.",
+    )
+
+
+def test_summary_callback_internal_error_is_not_success(
+    bot: MagicMock,
+    application_service: MagicMock,
+    summary_application_service: MagicMock,
+) -> None:
+    _register(bot, application_service, summary_application_service)
+    message = _make_message(text="Что думаешь?")
+    summary_application_service.summarize_active_discussion.side_effect = RuntimeError("failed")
+
+    with pytest.raises(RuntimeError, match="failed"):
+        _handler_at(2, bot)(message)
+
+    bot.send_message.assert_called_once()
+    assert "внутренней ошибки" in bot.send_message.call_args.args[1]
 
 
 @pytest.mark.parametrize(
@@ -230,52 +334,74 @@ def test_stop_does_not_call_summarization(
         ("Hello", True),
         ("/start_listening", False),
         ("  /stop_listening", False),
+        ("Что думаешь?", False),
         (None, False),
     ],
 )
 def test_ordinary_predicate(text: object, expected: bool) -> None:
     message = MagicMock()
     message.text = text
-    assert _is_non_command_text_message(message) is expected
+    assert _is_non_command_non_summary_text_message(message) is expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Что думаешь?", True),
+        ("  что   думаешь?  ", True),
+        ("Hello", False),
+        ("/start_listening", False),
+        (None, False),
+    ],
+)
+def test_summary_predicate(text: object, expected: bool) -> None:
+    message = MagicMock()
+    message.text = text
+    assert _is_summary_request_message(message) is expected
 
 
 def test_ordinary_callback_records_without_reply(
     bot: MagicMock,
     application_service: MagicMock,
+    summary_application_service: MagicMock,
 ) -> None:
-    register_telegram_handlers(bot, application_service)
+    _register(bot, application_service, summary_application_service)
     message = _make_message(text="Regular text")
     application_service.record_text_message.return_value = MagicMock()
 
-    _handler_at(2, bot)(message)
+    _handler_at(3, bot)(message)
 
     application_service.record_text_message.assert_called_once_with(message)
     bot.reply_to.assert_not_called()
+    bot.send_message.assert_not_called()
 
 
 def test_ordinary_callback_none_result_does_not_reply(
     bot: MagicMock,
     application_service: MagicMock,
+    summary_application_service: MagicMock,
 ) -> None:
-    register_telegram_handlers(bot, application_service)
+    _register(bot, application_service, summary_application_service)
     message = _make_message(text="Regular text")
     application_service.record_text_message.return_value = None
 
-    _handler_at(2, bot)(message)
+    _handler_at(3, bot)(message)
 
     bot.reply_to.assert_not_called()
+    bot.send_message.assert_not_called()
 
 
 def test_ordinary_callback_service_error_is_not_success(
     bot: MagicMock,
     application_service: MagicMock,
+    summary_application_service: MagicMock,
 ) -> None:
-    register_telegram_handlers(bot, application_service)
+    _register(bot, application_service, summary_application_service)
     message = _make_message(text="Regular text")
     application_service.record_text_message.side_effect = RuntimeError("index failed")
 
     with pytest.raises(RuntimeError, match="index failed"):
-        _handler_at(2, bot)(message)
+        _handler_at(3, bot)(message)
 
     bot.reply_to.assert_called_once()
     assert "внутренней ошибки" in bot.reply_to.call_args.args[1]
