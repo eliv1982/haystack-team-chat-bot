@@ -10,7 +10,16 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 NOTEBOOK_NAME = "Pipeline example.ipynb"
-PYTHON_MODULES = ("config", "models", "pipelines", "session_store", "bot")
+PYTHON_MODULES = (
+    "config",
+    "models",
+    "documents",
+    "document_store",
+    "pipelines",
+    "indexing_service",
+    "session_store",
+    "bot",
+)
 
 
 def test_notebook_exists_in_project_root() -> None:

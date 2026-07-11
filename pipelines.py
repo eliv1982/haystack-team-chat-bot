@@ -1,19 +1,17 @@
-"""Haystack pipeline placeholders for indexing, retrieval, and summarization."""
+"""Haystack pipeline builders for indexing, retrieval, and summarization."""
 
 from __future__ import annotations
 
 from typing import Protocol
 
+from haystack import Pipeline
+from haystack.components.embedders import OpenAIDocumentEmbedder
+from haystack.components.writers import DocumentWriter
+from haystack.document_stores.types import DocumentStore, DuplicatePolicy
+from haystack.utils import Secret
+
 from config import Settings
 from models import ChatMessage
-
-
-class IndexingPipeline(Protocol):
-    """Pipeline for indexing chat messages into the vector store."""
-
-    def index_messages(self, messages: list[ChatMessage]) -> None:
-        """Index messages into Pinecone. Implementation deferred to a later stage."""
-        ...
 
 
 class RetrievalPipeline(Protocol):
@@ -32,16 +30,31 @@ class SummarizationPipeline(Protocol):
         ...
 
 
-def build_indexing_pipeline(settings: Settings) -> IndexingPipeline:
-    """Build the indexing Haystack pipeline. Not implemented in Stage 1."""
-    raise NotImplementedError("Indexing pipeline is not implemented yet.")
+def create_indexing_pipeline(settings: Settings, document_store: DocumentStore) -> Pipeline:
+    """Build the indexing Haystack pipeline."""
+    document_embedder = OpenAIDocumentEmbedder(
+        api_key=Secret.from_env_var("OPENAI_API_KEY"),
+        model=settings.embedding_model,
+        api_base_url=settings.api_base_url,
+        progress_bar=False,
+    )
+    writer = DocumentWriter(
+        document_store=document_store,
+        policy=DuplicatePolicy.OVERWRITE,
+    )
+
+    pipeline = Pipeline()
+    pipeline.add_component("document_embedder", document_embedder)
+    pipeline.add_component("writer", writer)
+    pipeline.connect("document_embedder.documents", "writer.documents")
+    return pipeline
 
 
 def build_retrieval_pipeline(settings: Settings) -> RetrievalPipeline:
-    """Build the query/retrieval Haystack pipeline. Not implemented in Stage 1."""
+    """Build the query/retrieval Haystack pipeline. Not implemented in Stage 2A."""
     raise NotImplementedError("Retrieval pipeline is not implemented yet.")
 
 
 def build_summarization_pipeline(settings: Settings) -> SummarizationPipeline:
-    """Build the summarization Haystack pipeline. Not implemented in Stage 1."""
+    """Build the summarization Haystack pipeline. Not implemented in Stage 2A."""
     raise NotImplementedError("Summarization pipeline is not implemented yet.")

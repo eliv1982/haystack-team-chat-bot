@@ -10,7 +10,13 @@ Telegram bot for a group chat that indexes messages, retrieves relevant context,
 
 ## Current Status
 
-**Stage 1: foundation only.** The project provides configuration, module placeholders, and tests. Haystack pipelines, Pinecone integration, and Telegram handlers are not implemented yet.
+**Stage 1 foundation** is complete.
+
+**Stage 2A indexing pipeline** is implemented with an offline-testable flow:
+
+`ChatMessage -> Haystack Document -> OpenAIDocumentEmbedder -> DocumentWriter -> PineconeDocumentStore`
+
+Retrieval, summarization, Telegram handlers, and live Pinecone/OpenAI verification are not implemented yet. No live API calls to OpenAI, Pinecone, or Telegram have been performed in this stage.
 
 ## Requirements
 
