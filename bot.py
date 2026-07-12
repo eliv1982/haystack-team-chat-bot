@@ -1,18 +1,25 @@
-"""Telegram bot entry point. Handlers exist; runtime wiring and polling are not connected."""
+"""Telegram bot production entry point."""
 
 from __future__ import annotations
 
-from config import Settings
+import logging
 
+from runtime import build_runtime, configure_logging, run_polling
 
-def create_bot(settings: Settings):
-    """Create a configured Telegram bot. Runtime dependency wiring is deferred."""
-    raise NotImplementedError("Telegram bot runtime wiring is not implemented yet.")
+logger = logging.getLogger(__name__)
 
 
 def main() -> None:
-    """Application entry point. Polling is not started until runtime wiring is added."""
-    raise NotImplementedError("Bot polling is not implemented yet.")
+    """Load runtime dependencies and start Telegram polling."""
+    configure_logging()
+    try:
+        runtime = build_runtime()
+        run_polling(runtime.bot)
+    except KeyboardInterrupt:
+        logger.info("Shutdown requested")
+    except Exception as exc:
+        logger.error("%s: %s", type(exc).__name__, exc)
+        raise
 
 
 if __name__ == "__main__":

@@ -87,9 +87,28 @@ Handlers `/start_listening`, ordinary group text capture, and `/stop_listening` 
 → Telegram summary reply
 ```
 
-The summary phrase is not indexed and does not increment `message_count`. The listening session stays active after summary. Source isolation is enforced by the existing `SummarizationService`. Polling and runtime wiring are not connected yet. No live Telegram test has been run yet.
+The summary phrase is not indexed and does not increment `message_count`. The listening session stays active after summary. Source isolation is enforced by the existing `SummarizationService`. Stage 5C offline Telegram flow is complete.
 
-The «Что думаешь?» handler is implemented offline. Runtime dependency wiring and live Telegram delivery are not connected yet.
+**Stage 6A production runtime wiring** is implemented and tested offline:
+
+```text
+python bot.py
+→ Settings
+→ Pinecone preflight
+→ DocumentStore
+→ indexing / retrieval / summarization pipelines
+→ application services
+→ configured TeleBot
+→ infinity_polling
+```
+
+`python bot.py` is the production entry point. Startup loads settings, validates the existing Pinecone index, assembles the three Haystack pipelines, registers Telegram handlers, and starts polling. Pending updates are skipped at startup (`skip_pending=True`). Session state remains in-memory only. No live Telegram test has been run yet. The bot has not been verified in a real group chat.
+
+Safe startup command:
+
+```powershell
+.\.venv\Scripts\python.exe bot.py
+```
 
 The project uses the direct OpenAI API by default. `OPENAI_BASE_URL` is optional and only needed for a custom OpenAI-compatible proxy endpoint.
 

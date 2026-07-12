@@ -138,3 +138,23 @@ def test_importing_telegram_bot_does_not_create_global_dependencies() -> None:
     assert not hasattr(module, "bot")
     assert not hasattr(module, "store")
     assert not hasattr(module, "application_service")
+
+
+def test_runtime_uses_configured_telegram_bot_factory(settings: Settings) -> None:
+    document_store = MagicMock(name="document_store")
+    mock_bot = MagicMock(name="bot")
+
+    with (
+        patch("runtime.create_indexing_pipeline", return_value=MagicMock()),
+        patch("runtime.create_query_pipeline", return_value=MagicMock()),
+        patch("runtime.create_summarization_pipeline", return_value=MagicMock()),
+        patch("runtime.create_configured_telegram_bot", return_value=mock_bot) as create_bot,
+    ):
+        from runtime import assemble_runtime
+
+        result = assemble_runtime(settings=settings, document_store=document_store)
+
+    create_bot.assert_called_once()
+    assert result.bot is mock_bot
+    mock_bot.infinity_polling.assert_not_called()
+    mock_bot.get_me.assert_not_called()
