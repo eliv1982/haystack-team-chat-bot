@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
@@ -9,13 +10,13 @@ import pytest
 from telebot.types import Chat, Message, User
 
 from models import SummarizationResult
-from session_store import InMemorySessionStore, NoActiveSessionError
+from session_store import InMemorySessionStore
 from summarization_service import NoSummarizationContextError, SummarizationServiceError
 from telegram_application import UnsupportedTelegramChatError
 from telegram_summary_application import (
     SUMMARIZATION_CONTEXT_QUERY,
     SUMMARIZATION_INSTRUCTION,
-    InvalidSummaryRequestError,
+    NoSummarizableSessionError,
     TelegramSummaryApplicationService,
 )
 
@@ -96,12 +97,61 @@ def test_summarize_success_in_supported_chats(
     _start_session(session_store, message_count=2)
     message = _make_message(chat_type=chat_type)
 
-    result = summary_service.summarize_active_discussion(message)
+    result = summary_service.summarize_discussion(message)
 
     assert result.text == "Краткий итог обсуждения."
     assert result.source_document_ids == ("doc-1", "doc-2")
     assert session_store.get_active_session(-1001234567890) is not None
     assert session_store.get_active_session(-1001234567890).message_count == 2
+
+
+def test_active_session_has_priority_over_completed(
+    summary_service: TelegramSummaryApplicationService,
+    session_store: InMemorySessionStore,
+    summarization_service: MagicMock,
+) -> None:
+    _start_session(session_store, message_count=1)
+    session_store.stop_session(-1001234567890)
+    session_store.start_session(
+        chat_id=-1001234567890,
+        started_at=datetime(2024, 1, 15, 13, 0, tzinfo=timezone.utc),
+        started_by_user_id=8,
+        started_by_name="Bob",
+    )
+    session_store.record_message(-1001234567890)
+    session_store.record_message(-1001234567890)
+
+    summary_service.summarize_discussion(_make_message())
+
+    request = summarization_service.summarize.call_args.args[0]
+    active = session_store.get_active_session(-1001234567890)
+    assert active is not None
+    assert request.session_id == active.session_id
+
+
+def test_completed_session_used_after_stop(
+    summary_service: TelegramSummaryApplicationService,
+    session_store: InMemorySessionStore,
+    summarization_service: MagicMock,
+) -> None:
+    _start_session(session_store, message_count=3)
+    stopped = session_store.stop_session(-1001234567890)
+
+    summary_service.summarize_discussion(_make_message(text="/summary"))
+
+    request = summarization_service.summarize.call_args.args[0]
+    assert request.session_id == stopped.session_id
+    assert request.chat_id == -1001234567890
+
+
+def test_no_active_or_completed_raises_no_summarizable_session(
+    summary_service: TelegramSummaryApplicationService,
+    summarization_service: MagicMock,
+) -> None:
+    with pytest.raises(NoSummarizableSessionError):
+        summary_service.summarize_discussion(_make_message())
+
+    summarization_service.summarize.assert_not_called()
 
 
 def test_summarize_builds_exact_request(
@@ -112,7 +162,7 @@ def test_summarize_builds_exact_request(
     _start_session(session_store)
     message = _make_message()
 
-    summary_service.summarize_active_discussion(message)
+    summary_service.summarize_discussion(message)
 
     summarization_service.summarize.assert_called_once()
     request = summarization_service.summarize.call_args.args[0]
@@ -129,7 +179,7 @@ def test_summarize_calls_service_once(
 ) -> None:
     _start_session(session_store)
 
-    summary_service.summarize_active_discussion(_make_message())
+    summary_service.summarize_discussion(_make_message())
 
     summarization_service.summarize.assert_called_once()
 
@@ -144,7 +194,7 @@ def test_summarize_does_not_mutate_session_or_result(
     message = _make_message()
     original_text = message.text
 
-    result = summary_service.summarize_active_discussion(message)
+    result = summary_service.summarize_discussion(message)
 
     after = session_store.get_active_session(-1001234567890)
     assert before == after
@@ -179,7 +229,7 @@ def test_summarize_does_not_call_store_lifecycle_methods(
     session_store.record_message = counted_record  # type: ignore[method-assign]
     session_store.stop_session = counted_stop  # type: ignore[method-assign]
 
-    summary_service.summarize_active_discussion(_make_message())
+    summary_service.summarize_discussion(_make_message())
 
     assert calls == {"start": 0, "record": 0, "stop": 0}
 
@@ -194,30 +244,7 @@ def test_summarize_rejects_unsupported_chat(
     _start_session(session_store)
 
     with pytest.raises(UnsupportedTelegramChatError):
-        summary_service.summarize_active_discussion(_make_message(chat_type=chat_type))
-
-    summarization_service.summarize.assert_not_called()
-
-
-def test_summarize_rejects_non_trigger_text(
-    summary_service: TelegramSummaryApplicationService,
-    session_store: InMemorySessionStore,
-    summarization_service: MagicMock,
-) -> None:
-    _start_session(session_store)
-
-    with pytest.raises(InvalidSummaryRequestError):
-        summary_service.summarize_active_discussion(_make_message(text="Hello"))
-
-    summarization_service.summarize.assert_not_called()
-
-
-def test_summarize_without_active_session_propagates(
-    summary_service: TelegramSummaryApplicationService,
-    summarization_service: MagicMock,
-) -> None:
-    with pytest.raises(NoActiveSessionError):
-        summary_service.summarize_active_discussion(_make_message())
+        summary_service.summarize_discussion(_make_message(chat_type=chat_type))
 
     summarization_service.summarize.assert_not_called()
 
@@ -231,7 +258,7 @@ def test_summarize_no_context_error_propagates(
     summarization_service.summarize.side_effect = NoSummarizationContextError("empty")
 
     with pytest.raises(NoSummarizationContextError):
-        summary_service.summarize_active_discussion(_make_message())
+        summary_service.summarize_discussion(_make_message())
 
     assert session_store.get_active_session(-1001234567890) is not None
 
@@ -245,7 +272,60 @@ def test_summarize_error_does_not_stop_session_or_retry(
     summarization_service.summarize.side_effect = SummarizationServiceError("failed")
 
     with pytest.raises(SummarizationServiceError):
-        summary_service.summarize_active_discussion(_make_message())
+        summary_service.summarize_discussion(_make_message())
 
     assert session_store.get_active_session(-1001234567890).message_count == 2
     summarization_service.summarize.assert_called_once()
+
+
+def test_summary_after_stop_uses_completed_session(
+    summary_service: TelegramSummaryApplicationService,
+    session_store: InMemorySessionStore,
+    summarization_service: MagicMock,
+) -> None:
+    _start_session(session_store, message_count=4)
+    stopped = session_store.stop_session(-1001234567890)
+
+    summary_service.summarize_discussion(_make_message(text="/summary"))
+
+    request = summarization_service.summarize.call_args.args[0]
+    assert request.session_id == stopped.session_id
+    assert stopped.message_count == 4
+
+
+def test_new_active_switches_summary_to_new_session(
+    summary_service: TelegramSummaryApplicationService,
+    session_store: InMemorySessionStore,
+    summarization_service: MagicMock,
+) -> None:
+    _start_session(session_store, message_count=1)
+    session_store.stop_session(-1001234567890)
+    session_store.start_session(
+        chat_id=-1001234567890,
+        started_at=datetime(2024, 1, 15, 14, 0, tzinfo=timezone.utc),
+        started_by_user_id=8,
+        started_by_name="Bob",
+    )
+
+    summary_service.summarize_discussion(_make_message())
+
+    active = session_store.get_active_session(-1001234567890)
+    request = summarization_service.summarize.call_args.args[0]
+    assert active is not None
+    assert request.session_id == active.session_id
+
+
+def test_summary_logs_safe_observability_fields_only(
+    summary_service: TelegramSummaryApplicationService,
+    session_store: InMemorySessionStore,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    _start_session(session_store, message_count=2)
+
+    summary_service.summarize_discussion(_make_message())
+
+    assert "Summary completed: message_count=2 source_count=2 session_state=active" in caplog.text
+    assert "telegram-session-test" not in caplog.text
+    assert "-1001234567890" not in caplog.text
+    assert "doc-1" not in caplog.text

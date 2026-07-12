@@ -22,6 +22,7 @@ from session_store import InMemorySessionStore
 from summarization_service import SummarizationService
 from telegram_application import TelegramApplicationService
 from telegram_bot import create_configured_telegram_bot
+from telegram_commands import configure_telegram_command_menu
 from telegram_summary_application import TelegramSummaryApplicationService
 
 if TYPE_CHECKING:
@@ -136,6 +137,7 @@ def build_runtime() -> RuntimeComponents:
 def run_polling(bot: telebot.TeleBot) -> None:
     """Start Telegram long polling and perform graceful cleanup on exit."""
     logger.info("Telegram polling starting")
+    configure_telegram_command_menu(bot)
     try:
         bot.infinity_polling(**POLLING_KWARGS)
     except KeyboardInterrupt:

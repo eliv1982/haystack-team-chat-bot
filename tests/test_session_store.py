@@ -455,3 +455,160 @@ def test_concurrent_record_message_increments_count() -> None:
     active = store.get_active_session(-100)
     assert active is not None
     assert active.message_count == thread_count
+
+
+def test_stop_session_saves_latest_completed_snapshot() -> None:
+    store = InMemorySessionStore(session_id_factory=lambda: "session-1")
+    store.start_session(
+        chat_id=-100,
+        started_at=_started_at(),
+        started_by_user_id=7,
+        started_by_name="Alice",
+    )
+    store.record_message(-100)
+    stopped = store.stop_session(-100)
+    latest = store.get_latest_completed_session(-100)
+    assert latest is stopped
+    assert latest.message_count == 1
+
+
+def test_get_latest_completed_session_unknown_chat_returns_none() -> None:
+    store = InMemorySessionStore()
+    assert store.get_latest_completed_session(-100) is None
+
+
+def test_new_completed_replaces_previous_only_in_same_chat() -> None:
+    store = InMemorySessionStore(session_id_factory=lambda: "session-1")
+    store.start_session(
+        chat_id=-100,
+        started_at=_started_at(),
+        started_by_user_id=7,
+        started_by_name="Alice",
+    )
+    store.record_message(-100)
+    first = store.stop_session(-100)
+
+    store.start_session(
+        chat_id=-100,
+        started_at=_started_at(),
+        started_by_user_id=7,
+        started_by_name="Alice",
+    )
+    store.record_message(-100)
+    store.record_message(-100)
+    second = store.stop_session(-100)
+
+    latest = store.get_latest_completed_session(-100)
+    assert latest is second
+    assert latest.message_count == 2
+    assert latest is not first
+
+
+def test_start_new_active_does_not_remove_latest_completed() -> None:
+    store = InMemorySessionStore(session_id_factory=lambda: "session-1")
+    store.start_session(
+        chat_id=-100,
+        started_at=_started_at(),
+        started_by_user_id=7,
+        started_by_name="Alice",
+    )
+    completed = store.stop_session(-100)
+
+    store.start_session(
+        chat_id=-100,
+        started_at=_started_at(),
+        started_by_user_id=7,
+        started_by_name="Alice",
+    )
+
+    latest = store.get_latest_completed_session(-100)
+    assert latest is completed
+    assert store.get_active_session(-100) is not None
+
+
+def test_active_and_latest_completed_can_coexist() -> None:
+    counter = {"value": 0}
+
+    def session_id_factory() -> str:
+        counter["value"] += 1
+        return f"session-{counter['value']}"
+
+    store = InMemorySessionStore(session_id_factory=session_id_factory)
+    store.start_session(
+        chat_id=-100,
+        started_at=_started_at(),
+        started_by_user_id=7,
+        started_by_name="Alice",
+    )
+    completed = store.stop_session(-100)
+
+    store.start_session(
+        chat_id=-100,
+        started_at=_started_at(),
+        started_by_user_id=8,
+        started_by_name="Bob",
+    )
+    active = store.get_active_session(-100)
+
+    assert active is not None
+    assert store.get_latest_completed_session(-100) is completed
+    assert active.session_id != completed.session_id
+
+
+def test_latest_completed_isolated_between_chats() -> None:
+    store = InMemorySessionStore(session_id_factory=lambda: "session-1")
+    store.start_session(
+        chat_id=-100,
+        started_at=_started_at(),
+        started_by_user_id=7,
+        started_by_name="Alice",
+    )
+    store.stop_session(-100)
+
+    store.start_session(
+        chat_id=-200,
+        started_at=_started_at(),
+        started_by_user_id=8,
+        started_by_name="Bob",
+    )
+    store.record_message(-200)
+    stopped_b = store.stop_session(-200)
+
+    assert store.get_latest_completed_session(-100).message_count == 0
+    assert store.get_latest_completed_session(-200) is stopped_b
+
+
+def test_repeated_stop_does_not_change_latest_completed() -> None:
+    store = InMemorySessionStore(session_id_factory=lambda: "session-1")
+    store.start_session(
+        chat_id=-100,
+        started_at=_started_at(),
+        started_by_user_id=7,
+        started_by_name="Alice",
+    )
+    completed = store.stop_session(-100)
+    with pytest.raises(NoActiveSessionError):
+        store.stop_session(-100)
+    assert store.get_latest_completed_session(-100) is completed
+
+
+def test_latest_completed_snapshot_is_immutable() -> None:
+    store = InMemorySessionStore(session_id_factory=lambda: "session-1")
+    store.start_session(
+        chat_id=-100,
+        started_at=_started_at(),
+        started_by_user_id=7,
+        started_by_name="Alice",
+    )
+    store.record_message(-100)
+    stopped = store.stop_session(-100)
+    latest = store.get_latest_completed_session(-100)
+    assert latest.message_count == 1
+    assert stopped.message_count == 1
+
+
+@pytest.mark.parametrize("method_name", ["get_latest_completed_session"])
+def test_get_latest_completed_rejects_bool_chat_id(method_name: str) -> None:
+    store = InMemorySessionStore()
+    with pytest.raises(InvalidSessionStoreInputError, match="chat_id"):
+        store.get_latest_completed_session(True)  # type: ignore[arg-type]

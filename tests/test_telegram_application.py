@@ -404,8 +404,16 @@ def test_slow_record_in_one_chat_does_not_block_stop_in_another(
     assert not errors
 
 
-@pytest.mark.parametrize("text", ["Что думаешь?", "  что   думаешь?  "])
-def test_record_ignores_exact_summary_phrase(
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Что думаешь?",
+        "  что   думаешь?  ",
+        "Подведи итог",
+        "  Подведи   итог обсуждения  ",
+    ],
+)
+def test_record_ignores_summary_phrase_aliases(
     application_service: TelegramApplicationService,
     session_store: InMemorySessionStore,
     indexing_service: MagicMock,

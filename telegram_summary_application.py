@@ -1,22 +1,29 @@
-"""Application service for Telegram summary requests during active listening."""
+"""Application service for Telegram summary requests."""
 
 from __future__ import annotations
+
+import logging
+from typing import Literal
 
 import telebot.types
 
 from models import SummarizationRequest, SummarizationResult
-from session_store import NoActiveSessionError, SessionStore
+from session_store import ListeningSession, SessionStore
 from summarization_service import SummarizationService
-from telegram_adapter import GROUP_CHAT_TYPES, TelegramAdapterError, is_summary_request_text
+from telegram_adapter import GROUP_CHAT_TYPES, TelegramAdapterError
 from telegram_application import UnsupportedTelegramChatError
+
+logger = logging.getLogger(__name__)
+
+SessionState = Literal["active", "completed"]
 
 
 class TelegramSummaryApplicationError(Exception):
     """Base exception for Telegram summary application errors."""
 
 
-class InvalidSummaryRequestError(TelegramSummaryApplicationError, ValueError):
-    """Raised when a message is not an exact summary trigger phrase."""
+class NoSummarizableSessionError(TelegramSummaryApplicationError):
+    """Raised when no active or completed session exists for summarization."""
 
 
 SUMMARIZATION_CONTEXT_QUERY = (
@@ -35,7 +42,7 @@ SUMMARIZATION_INSTRUCTION = (
 
 
 class TelegramSummaryApplicationService:
-    """Coordinates summary requests for the active listening session."""
+    """Coordinates summary requests for active or latest completed sessions."""
 
     def __init__(
         self,
@@ -46,26 +53,40 @@ class TelegramSummaryApplicationService:
         self._session_store = session_store
         self._summarization_service = summarization_service
 
-    def summarize_active_discussion(
+    def summarize_discussion(
         self,
         message: telebot.types.Message,
     ) -> SummarizationResult:
         chat_id = self._require_group_chat_id(message)
-
-        if not is_summary_request_text(message.text):
-            raise InvalidSummaryRequestError("message.text must be an exact summary trigger phrase")
-
-        active_session = self._session_store.get_active_session(chat_id)
-        if active_session is None:
-            raise NoActiveSessionError(f"No active session exists for chat_id {chat_id}")
+        session, session_state = self._resolve_session(chat_id)
 
         request = SummarizationRequest(
             context_query=SUMMARIZATION_CONTEXT_QUERY,
             instruction=SUMMARIZATION_INSTRUCTION,
             chat_id=chat_id,
-            session_id=active_session.session_id,
+            session_id=session.session_id,
         )
-        return self._summarization_service.summarize(request)
+        result = self._summarization_service.summarize(request)
+        logger.info(
+            "Summary completed: message_count=%s source_count=%s session_state=%s",
+            session.message_count,
+            len(result.source_document_ids),
+            session_state,
+        )
+        return result
+
+    def _resolve_session(self, chat_id: int) -> tuple[ListeningSession, SessionState]:
+        active_session = self._session_store.get_active_session(chat_id)
+        if active_session is not None:
+            return active_session, "active"
+
+        completed_session = self._session_store.get_latest_completed_session(chat_id)
+        if completed_session is not None:
+            return completed_session, "completed"
+
+        raise NoSummarizableSessionError(
+            f"No active or completed session exists for chat_id {chat_id}"
+        )
 
     def _require_group_chat_id(self, message: telebot.types.Message) -> int:
         if message.chat is None:

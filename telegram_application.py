@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from threading import RLock
 
 import telebot.types
@@ -15,7 +16,7 @@ from telegram_adapter import (
     GROUP_CHAT_TYPES,
     TelegramAdapterError,
     build_author_fields,
-    is_summary_request_text,
+    is_summary_phrase_text,
     is_telegram_command,
     normalize_sent_at,
     telegram_text_message_to_chat_message,
@@ -32,6 +33,14 @@ class UnsupportedTelegramChatError(TelegramApplicationError):
 
 class UnexpectedIndexingResultError(TelegramApplicationError):
     """Raised when indexing does not write exactly one document."""
+
+
+@dataclass(frozen=True, slots=True)
+class DiscussionStatus:
+    """Immutable snapshot of active and latest completed sessions for one chat."""
+
+    active_session: ListeningSession | None
+    latest_completed_session: ListeningSession | None
 
 
 class _ChatLockRegistry:
@@ -90,7 +99,7 @@ class TelegramApplicationService:
             if active_session is None:
                 return None
 
-            if is_summary_request_text(message.text):
+            if is_summary_phrase_text(message.text):
                 return None
 
             chat_message = telegram_text_message_to_chat_message(
@@ -108,6 +117,13 @@ class TelegramApplicationService:
         chat_id = self._require_group_chat_id(message)
         with self._chat_locks.lock_for(chat_id):
             return self._session_store.stop_session(chat_id)
+
+    def get_discussion_status(self, message: telebot.types.Message) -> DiscussionStatus:
+        chat_id = self._require_group_chat_id(message)
+        return DiscussionStatus(
+            active_session=self._session_store.get_active_session(chat_id),
+            latest_completed_session=self._session_store.get_latest_completed_session(chat_id),
+        )
 
     def _require_group_chat_id(self, message: telebot.types.Message) -> int:
         if message.chat is None:

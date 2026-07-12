@@ -99,6 +99,45 @@ def test_system_prompt_requires_decisions_and_actions_distinction() -> None:
     assert "Следующие действия" in system_text
 
 
+def test_system_prompt_requires_completeness_rules() -> None:
+    system_text = _render_prompt(documents=_discussion_documents(), instruction="Summarize")[0]
+
+    assert "Проанализируй каждое переданное сообщение" in system_text
+    assert "поручения" in system_text
+    assert "ответственных" in system_text
+    assert "сроки" in system_text
+    assert "резервные каналы связи" in system_text
+    assert "Запрещено писать, что следующие действия отсутствуют" in system_text
+    assert "внутреннюю проверку полноты" in system_text
+    assert "Не добавляй новые даты" in system_text
+
+
+def test_rendered_prompt_includes_action_item_message() -> None:
+    action_document = chat_message_to_document(
+        ChatMessage(
+            chat_id=-1001234567890,
+            message_id=44,
+            user_id=9,
+            session_id="chat:-1001234567890",
+            author_name="Elena",
+            username="elena",
+            text=(
+                "Елена подготовит release checklist к понедельнику, 15:00; "
+                "резервный канал связи — email."
+            ),
+            sent_at=datetime(2024, 1, 15, 12, 32, tzinfo=timezone.utc),
+        )
+    )
+    user_text = _render_prompt(
+        documents=[action_document],
+        instruction="Подведи итог",
+    )[1]
+
+    assert "release checklist" in user_text
+    assert "понедельнику, 15:00" in user_text
+    assert "email" in user_text
+
+
 def test_system_prompt_requires_ai_recommendation_label() -> None:
     system_text = _render_prompt(documents=_discussion_documents(), instruction="Summarize")[0]
 

@@ -351,8 +351,41 @@ def test_build_runtime_store_failure_skips_assembly(settings: Settings) -> None:
     mock_assemble.assert_not_called()
 
 
+def test_run_polling_configures_menu_before_polling(bot: MagicMock) -> None:
+    events: list[str] = []
+
+    def _menu_configured(_bot: MagicMock) -> None:
+        events.append("menu")
+
+    def _polling(**kwargs: object) -> None:
+        events.append("polling")
+
+    bot.infinity_polling.side_effect = _polling
+    with patch("runtime.configure_telegram_command_menu", side_effect=_menu_configured):
+        runtime.run_polling(bot)
+
+    assert events == ["menu", "polling"]
+    bot.infinity_polling.assert_called_once_with(**runtime.POLLING_KWARGS)
+    bot.stop_polling.assert_called_once_with()
+
+
+def test_run_polling_menu_failure_blocks_polling(bot: MagicMock) -> None:
+    from telegram_commands import TelegramCommandMenuError
+
+    with patch(
+        "runtime.configure_telegram_command_menu",
+        side_effect=TelegramCommandMenuError("configuration failed"),
+    ):
+        with pytest.raises(TelegramCommandMenuError, match="configuration failed"):
+            runtime.run_polling(bot)
+
+    bot.infinity_polling.assert_not_called()
+    bot.stop_polling.assert_not_called()
+
+
 def test_run_polling_calls_infinity_polling_once_with_supported_kwargs(bot: MagicMock) -> None:
-    runtime.run_polling(bot)
+    with patch("runtime.configure_telegram_command_menu"):
+        runtime.run_polling(bot)
 
     bot.infinity_polling.assert_called_once_with(**runtime.POLLING_KWARGS)
     bot.polling.assert_not_called()
@@ -365,7 +398,8 @@ def test_run_polling_calls_infinity_polling_once_with_supported_kwargs(bot: Magi
 def test_run_polling_keyboard_interrupt_performs_cleanup(bot: MagicMock) -> None:
     bot.infinity_polling.side_effect = KeyboardInterrupt()
 
-    runtime.run_polling(bot)
+    with patch("runtime.configure_telegram_command_menu"):
+        runtime.run_polling(bot)
 
     bot.infinity_polling.assert_called_once_with(**runtime.POLLING_KWARGS)
     bot.stop_polling.assert_called_once_with()
@@ -374,8 +408,9 @@ def test_run_polling_keyboard_interrupt_performs_cleanup(bot: MagicMock) -> None
 def test_run_polling_unexpected_error_is_not_swallowed(bot: MagicMock) -> None:
     bot.infinity_polling.side_effect = RuntimeError("polling failed")
 
-    with pytest.raises(RuntimeError, match="polling failed"):
-        runtime.run_polling(bot)
+    with patch("runtime.configure_telegram_command_menu"):
+        with pytest.raises(RuntimeError, match="polling failed"):
+            runtime.run_polling(bot)
 
     bot.infinity_polling.assert_called_once_with(**runtime.POLLING_KWARGS)
     bot.stop_polling.assert_called_once_with()
@@ -385,8 +420,9 @@ def test_run_polling_does_not_log_token(bot: MagicMock, caplog: pytest.LogCaptur
     caplog.set_level(logging.INFO)
     bot.infinity_polling.side_effect = RuntimeError("secret-telegram-token leaked")
 
-    with pytest.raises(RuntimeError):
-        runtime.run_polling(bot)
+    with patch("runtime.configure_telegram_command_menu"):
+        with pytest.raises(RuntimeError):
+            runtime.run_polling(bot)
 
     combined = caplog.text + str(bot.infinity_polling.call_args)
     assert "secret-telegram-token" not in combined

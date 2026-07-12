@@ -10,7 +10,13 @@ import pytest
 from telebot.types import Chat, Message, User
 
 from models import ChatMessage
-from telegram_adapter import TelegramAdapterError, is_summary_request_text, telegram_text_message_to_chat_message
+from telegram_adapter import (
+    TelegramAdapterError,
+    is_summary_command_text,
+    is_summary_phrase_text,
+    is_summary_request_text,
+    telegram_text_message_to_chat_message,
+)
 
 
 def _make_message(
@@ -235,9 +241,12 @@ def test_adapter_does_not_call_api_methods() -> None:
         "Что думаешь?",
         "что думаешь?",
         "  ЧТО   ДУМАЕШЬ?  ",
+        "Подведи итог",
+        "  подведи   итог обсуждения  ",
     ],
 )
-def test_is_summary_request_text_accepts_normalized_phrases(text: str) -> None:
+def test_is_summary_phrase_text_accepts_normalized_phrases(text: str) -> None:
+    assert is_summary_phrase_text(text) is True
     assert is_summary_request_text(text) is True
 
 
@@ -250,14 +259,42 @@ def test_is_summary_request_text_accepts_normalized_phrases(text: str) -> None:
         "Что думаешь",
         "Что думаешь??",
         "А что думаешь?",
-        "/что_думаешь",
+        "/summary",
+        "/summary@botname",
         "Prefix Что думаешь?",
         "Что думаешь? suffix",
+        "Подведи итог сейчас",
         123,
     ],
 )
-def test_is_summary_request_text_rejects_non_exact_phrases(text: object) -> None:
-    assert is_summary_request_text(text) is False
+def test_is_summary_phrase_text_rejects_non_exact_phrases(text: object) -> None:
+    assert is_summary_phrase_text(text) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "/summary",
+        "/summary@team_bot",
+        "  /summary@team_bot  ",
+    ],
+)
+def test_is_summary_command_text_accepts_summary_command(text: str) -> None:
+    assert is_summary_command_text(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "/summary extra",
+        "/summary@bot extra",
+        "Подведи итог",
+        "/start_listening",
+        None,
+    ],
+)
+def test_is_summary_command_text_rejects_non_command_forms(text: object) -> None:
+    assert is_summary_command_text(text) is False
 
 
 def test_is_summary_request_text_does_not_mutate_input() -> None:

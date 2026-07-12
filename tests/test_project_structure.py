@@ -29,6 +29,7 @@ PYTHON_MODULES = (
     "telegram_summary_application",
     "telegram_handlers",
     "telegram_bot",
+    "telegram_commands",
     "runtime",
     "bot",
 )
@@ -164,6 +165,11 @@ def test_stage_5c_imports_do_not_create_global_dependencies() -> None:
 
 def test_stage_6a_runtime_module_exists() -> None:
     assert (PROJECT_ROOT / "runtime.py").is_file()
+
+
+def test_stage_6b1_modules_exist() -> None:
+    assert (PROJECT_ROOT / "telegram_commands.py").is_file()
+    assert (PROJECT_ROOT / "docs" / "project_roadmap.md").is_file()
 
 
 def test_bot_has_main_and_entry_guard() -> None:

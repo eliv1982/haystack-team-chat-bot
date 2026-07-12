@@ -151,6 +151,10 @@ class SessionStore(Protocol):
         """Stop the active session and return its final snapshot."""
         ...
 
+    def get_latest_completed_session(self, chat_id: int) -> ListeningSession | None:
+        """Return the latest completed session for the chat, if any."""
+        ...
+
 
 class InMemorySessionStore:
     """Thread-safe in-memory implementation of SessionStore."""
@@ -162,6 +166,7 @@ class InMemorySessionStore:
     ) -> None:
         self._session_id_factory = session_id_factory or _default_session_id_factory
         self._active_sessions: dict[int, ListeningSession] = {}
+        self._latest_completed_sessions: dict[int, ListeningSession] = {}
         self._lock = RLock()
 
     def start_session(
@@ -226,4 +231,10 @@ class InMemorySessionStore:
                 raise NoActiveSessionError(
                     f"No active session exists for chat_id {validated_chat_id}"
                 )
+            self._latest_completed_sessions[validated_chat_id] = current
             return current
+
+    def get_latest_completed_session(self, chat_id: int) -> ListeningSession | None:
+        validated_chat_id = _validate_store_chat_id(chat_id)
+        with self._lock:
+            return self._latest_completed_sessions.get(validated_chat_id)
