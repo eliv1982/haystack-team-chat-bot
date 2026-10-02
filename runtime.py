@@ -10,14 +10,11 @@ import telebot
 
 from config import Settings, load_settings
 from document_store import create_pinecone_document_store
+from error_reporting import describe_exception
 from indexing_service import IndexingService
 from pinecone_preflight import PineconePreflightError, validate_existing_pinecone_index
-from pipelines import (
-    create_indexing_pipeline,
-    create_query_pipeline,
-    create_summarization_pipeline,
-)
-from retrieval_service import RetrievalService
+from pipelines import create_indexing_pipeline, create_summarization_pipeline
+from session_documents import SessionDocumentService
 from session_store import InMemorySessionStore
 from summarization_service import SummarizationService
 from telegram_application import TelegramApplicationService
@@ -52,7 +49,7 @@ class RuntimeComponents:
     document_store: PineconeDocumentStore
     session_store: InMemorySessionStore
     indexing_service: IndexingService
-    retrieval_service: RetrievalService
+    session_document_service: SessionDocumentService
     summarization_service: SummarizationService
     telegram_application_service: TelegramApplicationService
     telegram_summary_application_service: TelegramSummaryApplicationService
@@ -68,16 +65,12 @@ def assemble_runtime(
     logger.info("Runtime assembly started")
 
     indexing_pipeline = create_indexing_pipeline(settings, document_store)
-    query_pipeline = create_query_pipeline(settings, document_store)
     summarization_pipeline = create_summarization_pipeline(settings)
 
     indexing_service = IndexingService(indexing_pipeline)
-    retrieval_service = RetrievalService(
-        query_pipeline,
-        top_k=settings.retrieval_top_k,
-    )
+    session_document_service = SessionDocumentService(document_store)
     summarization_service = SummarizationService(
-        retrieval_service,
+        session_document_service,
         summarization_pipeline,
     )
 
@@ -104,7 +97,7 @@ def assemble_runtime(
         document_store=document_store,
         session_store=session_store,
         indexing_service=indexing_service,
-        retrieval_service=retrieval_service,
+        session_document_service=session_document_service,
         summarization_service=summarization_service,
         telegram_application_service=telegram_application_service,
         telegram_summary_application_service=telegram_summary_application_service,
@@ -137,13 +130,13 @@ def build_runtime() -> RuntimeComponents:
 def run_polling(bot: telebot.TeleBot) -> None:
     """Start Telegram long polling and perform graceful cleanup on exit."""
     logger.info("Telegram polling starting")
-    configure_telegram_command_menu(bot)
     try:
+        configure_telegram_command_menu(bot)
         bot.infinity_polling(**POLLING_KWARGS)
     except KeyboardInterrupt:
         logger.info("Telegram polling stopped")
     except Exception as exc:
-        logger.error("Telegram polling failed: %s", type(exc).__name__)
+        logger.error("Telegram startup or polling failed: %s", describe_exception(exc))
         raise
     else:
         logger.info("Telegram polling stopped")

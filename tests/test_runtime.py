@@ -42,11 +42,6 @@ def indexing_pipeline() -> MagicMock:
 
 
 @pytest.fixture
-def query_pipeline() -> MagicMock:
-    return MagicMock(name="query_pipeline")
-
-
-@pytest.fixture
 def summarization_pipeline() -> MagicMock:
     return MagicMock(name="summarization_pipeline")
 
@@ -57,8 +52,8 @@ def indexing_service() -> MagicMock:
 
 
 @pytest.fixture
-def retrieval_service() -> MagicMock:
-    return MagicMock(name="retrieval_service")
+def session_document_service() -> MagicMock:
+    return MagicMock(name="session_document_service")
 
 
 @pytest.fixture
@@ -91,10 +86,9 @@ def assemble_patches(
     settings: Settings,
     document_store: MagicMock,
     indexing_pipeline: MagicMock,
-    query_pipeline: MagicMock,
     summarization_pipeline: MagicMock,
     indexing_service: MagicMock,
-    retrieval_service: MagicMock,
+    session_document_service: MagicMock,
     summarization_service: MagicMock,
     session_store: MagicMock,
     telegram_application_service: MagicMock,
@@ -103,13 +97,15 @@ def assemble_patches(
 ):
     with (
         patch("runtime.create_indexing_pipeline", return_value=indexing_pipeline) as mock_indexing,
-        patch("runtime.create_query_pipeline", return_value=query_pipeline) as mock_query,
         patch(
             "runtime.create_summarization_pipeline",
             return_value=summarization_pipeline,
         ) as mock_summarization,
         patch("runtime.IndexingService", return_value=indexing_service) as mock_indexing_service,
-        patch("runtime.RetrievalService", return_value=retrieval_service) as mock_retrieval_service,
+        patch(
+            "runtime.SessionDocumentService",
+            return_value=session_document_service,
+        ) as mock_session_document_service,
         patch(
             "runtime.SummarizationService",
             return_value=summarization_service,
@@ -129,20 +125,18 @@ def assemble_patches(
             "settings": settings,
             "document_store": document_store,
             "indexing_pipeline": indexing_pipeline,
-            "query_pipeline": query_pipeline,
             "summarization_pipeline": summarization_pipeline,
             "indexing_service": indexing_service,
-            "retrieval_service": retrieval_service,
+            "session_document_service": session_document_service,
             "summarization_service": summarization_service,
             "session_store": session_store,
             "telegram_application_service": telegram_application_service,
             "telegram_summary_application_service": telegram_summary_application_service,
             "bot": bot,
             "mock_indexing": mock_indexing,
-            "mock_query": mock_query,
             "mock_summarization": mock_summarization,
             "mock_indexing_service": mock_indexing_service,
-            "mock_retrieval_service": mock_retrieval_service,
+            "mock_session_document_service": mock_session_document_service,
             "mock_summarization_service": mock_summarization_service,
             "mock_session_store": mock_session_store,
             "mock_telegram_app": mock_telegram_app,
@@ -159,7 +153,6 @@ def test_import_runtime_does_not_load_settings_or_preflight() -> None:
         "validate_existing_pinecone_index",
         "create_pinecone_document_store",
         "create_indexing_pipeline",
-        "create_query_pipeline",
         "create_summarization_pipeline",
         "create_configured_telegram_bot",
         "assemble_runtime",
@@ -191,18 +184,14 @@ def test_assemble_runtime_wires_dependencies_once(assemble_patches: dict) -> Non
     result = runtime.assemble_runtime(settings=settings, document_store=document_store)
 
     assemble_patches["mock_indexing"].assert_called_once_with(settings, document_store)
-    assemble_patches["mock_query"].assert_called_once_with(settings, document_store)
     assemble_patches["mock_summarization"].assert_called_once_with(settings)
 
     assemble_patches["mock_indexing_service"].assert_called_once_with(
         assemble_patches["indexing_pipeline"]
     )
-    assemble_patches["mock_retrieval_service"].assert_called_once_with(
-        assemble_patches["query_pipeline"],
-        top_k=settings.retrieval_top_k,
-    )
+    assemble_patches["mock_session_document_service"].assert_called_once_with(document_store)
     assemble_patches["mock_summarization_service"].assert_called_once_with(
-        assemble_patches["retrieval_service"],
+        assemble_patches["session_document_service"],
         assemble_patches["summarization_pipeline"],
     )
 
@@ -230,7 +219,7 @@ def test_assemble_runtime_wires_dependencies_once(assemble_patches: dict) -> Non
     assert result.document_store is document_store
     assert result.session_store is assemble_patches["session_store"]
     assert result.indexing_service is assemble_patches["indexing_service"]
-    assert result.retrieval_service is assemble_patches["retrieval_service"]
+    assert result.session_document_service is assemble_patches["session_document_service"]
     assert result.summarization_service is assemble_patches["summarization_service"]
     assert result.telegram_application_service is assemble_patches["telegram_application_service"]
     assert (
@@ -380,7 +369,25 @@ def test_run_polling_menu_failure_blocks_polling(bot: MagicMock) -> None:
             runtime.run_polling(bot)
 
     bot.infinity_polling.assert_not_called()
-    bot.stop_polling.assert_not_called()
+    bot.stop_polling.assert_called_once_with()
+
+
+def test_run_polling_menu_failure_does_not_log_exception_text(
+    bot: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    token = "123456789:AAH-s3cretTokenValue_0123456789abcdefghi"
+    error = ConnectionError(f"HTTPSConnectionPool: url: /bot{token}/setMyCommands")
+
+    with patch("runtime.configure_telegram_command_menu", side_effect=error):
+        with pytest.raises(ConnectionError):
+            runtime.run_polling(bot)
+
+    assert "Telegram startup or polling failed: ConnectionError" in caplog.text
+    assert token not in caplog.text
+    bot.infinity_polling.assert_not_called()
+    bot.stop_polling.assert_called_once_with()
 
 
 def test_run_polling_calls_infinity_polling_once_with_supported_kwargs(bot: MagicMock) -> None:

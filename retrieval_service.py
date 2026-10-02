@@ -95,6 +95,33 @@ def _validate_document(
     request: RetrievalRequest,
     seen_ids: set[str],
 ) -> None:
+    _validate_identity_and_content(document, seen_ids)
+    _validate_score(document)
+    _validate_scope_and_metadata(
+        document,
+        chat_id=request.chat_id,
+        session_id=request.session_id,
+    )
+
+
+def validate_scoped_document(
+    document: object,
+    *,
+    chat_id: int,
+    session_id: str,
+    seen_ids: set[str],
+) -> None:
+    """Fail closed unless a loaded document belongs to the given chat and session.
+
+    Shared by every path that loads session documents. Unlike ``_validate_document``
+    it does not require a similarity score, because documents loaded by metadata
+    filter alone have none.
+    """
+    _validate_identity_and_content(document, seen_ids)
+    _validate_scope_and_metadata(document, chat_id=chat_id, session_id=session_id)
+
+
+def _validate_identity_and_content(document: object, seen_ids: set[str]) -> None:
     if not isinstance(document, Document):
         raise RetrievalServiceError("retriever.documents must contain Haystack Document instances")
 
@@ -108,6 +135,8 @@ def _validate_document(
     if not isinstance(document.content, str) or not document.content:
         raise RetrievalServiceError("retrieved document content must be a non-empty string")
 
+
+def _validate_score(document: Document) -> None:
     score = document.score
     if score is None:
         raise RetrievalServiceError("retrieved document score must be present")
@@ -116,15 +145,22 @@ def _validate_document(
     if not math.isfinite(float(score)):
         raise RetrievalServiceError("retrieved document score must be finite")
 
+
+def _validate_scope_and_metadata(
+    document: Document,
+    *,
+    chat_id: int,
+    session_id: str,
+) -> None:
     metadata = document.meta
     if not isinstance(metadata, Mapping):
         raise RetrievalServiceError("retrieved document metadata must be a mapping")
 
-    expected_chat_id = str(request.chat_id)
+    expected_chat_id = str(chat_id)
     if metadata.get("chat_id") != expected_chat_id:
         raise RetrievalInvariantError("retrieved document chat_id does not match request")
 
-    if metadata.get("session_id") != request.session_id:
+    if metadata.get("session_id") != session_id:
         raise RetrievalInvariantError("retrieved document session_id does not match request")
 
     if metadata.get("source") != "telegram":

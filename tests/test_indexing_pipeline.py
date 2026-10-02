@@ -78,6 +78,23 @@ def test_document_embedder_kwargs_omit_api_base_url_for_direct_openai(
     assert kwargs["progress_bar"] is False
 
 
+def test_document_embedder_kwargs_raise_on_failure(
+    settings: Settings,
+    direct_openai_settings: Settings,
+) -> None:
+    assert _build_document_embedder_kwargs(settings)["raise_on_failure"] is True
+    assert _build_document_embedder_kwargs(direct_openai_settings)["raise_on_failure"] is True
+
+
+def test_indexing_pipeline_embedder_raises_on_failure(
+    settings: Settings,
+    openai_env: None,
+) -> None:
+    pipeline = create_indexing_pipeline(settings, InMemoryDocumentStore())
+
+    assert pipeline.get_component("document_embedder").raise_on_failure is True
+
+
 def test_document_embedder_kwargs_include_custom_api_base_url(
     settings: Settings,
 ) -> None:

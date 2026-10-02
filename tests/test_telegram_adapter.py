@@ -12,10 +12,13 @@ from telebot.types import Chat, Message, User
 from models import ChatMessage
 from telegram_adapter import (
     TelegramAdapterError,
+    command_target_username,
+    is_command_addressed_to,
     is_summary_command_text,
     is_summary_phrase_text,
     is_summary_request_text,
     telegram_text_message_to_chat_message,
+    unsupported_sender_reason,
 )
 
 
@@ -302,3 +305,91 @@ def test_is_summary_request_text_does_not_mutate_input() -> None:
     text = original
     is_summary_request_text(text)
     assert text == original
+
+
+# --- commands addressed to a specific bot ------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("/summary", None),
+        ("/summary@ThisBot", "ThisBot"),
+        ("/summary@OtherBot", "OtherBot"),
+        ("/summary@ThisBot extra args", "ThisBot"),
+        ("/summary extra@args", None),
+        ("/summary@", ""),
+        ("hello@ThisBot", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_command_target_username(text: str | None, expected: str | None) -> None:
+    assert command_target_username(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "bot_username", "expected"),
+    [
+        ("/summary", "ThisBot", True),
+        ("/summary@ThisBot", "ThisBot", True),
+        ("/summary@thisbot", "ThisBot", True),
+        ("/summary@THISBOT", "thisbot", True),
+        ("/summary@ThisBot", "@ThisBot", True),
+        ("/summary@ThisBot arg", "ThisBot", True),
+        ("/summary@OtherBot", "ThisBot", False),
+        ("/summary@ThisBotExtra", "ThisBot", False),
+        ("/summary@Thi", "ThisBot", False),
+        ("/summary@", "ThisBot", False),
+        ("/summary@ThisBot@x", "ThisBot", False),
+        # Own username unknown: only commands that name no bot are accepted.
+        ("/summary", None, True),
+        ("/summary@ThisBot", None, False),
+        ("/summary@ThisBot", "", False),
+        # Not commands at all.
+        ("summary", "ThisBot", False),
+        ("Подведи итог", "ThisBot", False),
+        ("", "ThisBot", False),
+        (None, "ThisBot", False),
+    ],
+)
+def test_is_command_addressed_to(text: str | None, bot_username: str | None, expected: bool) -> None:
+    assert is_command_addressed_to(text, bot_username) is expected
+
+
+# --- senders that are not group participants ----------------------------------
+
+
+def test_unsupported_sender_reason_is_none_for_a_regular_participant() -> None:
+    assert unsupported_sender_reason(_make_message()) is None
+
+
+def test_unsupported_sender_reason_flags_bot_users() -> None:
+    assert unsupported_sender_reason(_make_message(is_bot=True)) == "bot_user"
+
+
+def test_unsupported_sender_reason_flags_sender_chat_even_with_a_human_looking_sender() -> None:
+    message = _make_message(user_id=777000, first_name="Telegram", last_name=None, username=None)
+    message.sender_chat = Chat(id=-1007654321000, type="channel", title="Announcements")
+
+    assert unsupported_sender_reason(message) == "sender_chat"
+
+
+def test_unsupported_sender_reason_flags_anonymous_admin_payload() -> None:
+    message = _make_message(
+        user_id=1087968824,
+        is_bot=True,
+        first_name="Group",
+        last_name=None,
+        username="GroupAnonymousBot",
+    )
+    message.sender_chat = Chat(id=-1001234567890, type="supergroup", title="Team Chat")
+
+    assert unsupported_sender_reason(message) == "sender_chat"
+
+
+def test_adapter_still_refuses_to_convert_unsupported_senders() -> None:
+    # Defense in depth: even if a caller forgets to filter, no identity is invented.
+    message = _make_message(user_id=1087968824, is_bot=True, first_name="Group")
+    with pytest.raises(TelegramAdapterError):
+        telegram_text_message_to_chat_message(message, session_id="session-1")

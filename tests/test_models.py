@@ -198,13 +198,12 @@ def test_retrieval_request_trims_session_id() -> None:
 
 def test_valid_summarization_request() -> None:
     request = SummarizationRequest(
-        context_query="What was decided about the release?",
         instruction="Подготовь краткое резюме обсуждения",
         chat_id=-1001234567890,
         session_id="chat:-1001234567890",
+        expected_message_count=3,
     )
 
-    assert request.context_query == "What was decided about the release?"
     assert request.instruction == "Подготовь краткое резюме обсуждения"
     assert request.chat_id == -1001234567890
     assert request.session_id == "chat:-1001234567890"
@@ -212,10 +211,10 @@ def test_valid_summarization_request() -> None:
 
 def test_summarization_request_allows_negative_group_chat_id() -> None:
     request = SummarizationRequest(
-        context_query="status",
         instruction="Summarize",
         chat_id=-999_000_001,
         session_id="session-1",
+        expected_message_count=3,
     )
 
     assert request.chat_id == -999_000_001
@@ -224,10 +223,10 @@ def test_summarization_request_allows_negative_group_chat_id() -> None:
 def test_summarization_request_rejects_bool_chat_id() -> None:
     with pytest.raises(InvalidSummarizationRequestError, match="chat_id"):
         SummarizationRequest(
-            context_query="status",
             instruction="Summarize",
             chat_id=True,
             session_id="session-1",
+            expected_message_count=3,
         )
 
 
@@ -235,52 +234,43 @@ def test_summarization_request_rejects_bool_chat_id() -> None:
 def test_summarization_request_rejects_non_int_chat_id(chat_id: object) -> None:
     with pytest.raises(InvalidSummarizationRequestError, match="chat_id"):
         SummarizationRequest(
-            context_query="status",
             instruction="Summarize",
             chat_id=chat_id,
             session_id="session-1",
+            expected_message_count=3,
         )  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("field_name,field_value", [("context_query", ""), ("context_query", "   ")])
-def test_summarization_request_rejects_empty_context_query(field_name: str, field_value: str) -> None:
-    with pytest.raises(InvalidSummarizationRequestError, match=field_name):
-        SummarizationRequest(
-            context_query=field_value if field_name == "context_query" else "status",
+def test_summarization_request_has_no_semantic_query_field() -> None:
+    # A whole-session summary must not be tied to a semantic query: the source
+    # documents are every message of the session, selected by chat and session.
+    with pytest.raises(TypeError):
+        SummarizationRequest(  # type: ignore[call-arg]
+            context_query="status",
             instruction="Summarize",
             chat_id=-100,
             session_id="session-1",
+            expected_message_count=3,
         )
-
-
-def test_summarization_request_trims_context_query() -> None:
-    request = SummarizationRequest(
-        context_query="  release status  ",
-        instruction="Summarize",
-        chat_id=-100,
-        session_id="session-1",
-    )
-
-    assert request.context_query == "release status"
 
 
 @pytest.mark.parametrize("instruction", ["", "   "])
 def test_summarization_request_rejects_empty_instruction(instruction: str) -> None:
     with pytest.raises(InvalidSummarizationRequestError, match="instruction"):
         SummarizationRequest(
-            context_query="status",
             instruction=instruction,
             chat_id=-100,
             session_id="session-1",
+            expected_message_count=3,
         )
 
 
 def test_summarization_request_trims_instruction() -> None:
     request = SummarizationRequest(
-        context_query="status",
         instruction="  Summarize discussion  ",
         chat_id=-100,
         session_id="session-1",
+        expected_message_count=3,
     )
 
     assert request.instruction == "Summarize discussion"
@@ -290,19 +280,19 @@ def test_summarization_request_trims_instruction() -> None:
 def test_summarization_request_rejects_empty_session_id(session_id: str) -> None:
     with pytest.raises(InvalidSummarizationRequestError, match="session_id"):
         SummarizationRequest(
-            context_query="status",
             instruction="Summarize",
             chat_id=-100,
             session_id=session_id,
+            expected_message_count=3,
         )
 
 
 def test_summarization_request_trims_session_id() -> None:
     request = SummarizationRequest(
-        context_query="status",
         instruction="Summarize",
         chat_id=-100,
         session_id="  session-1  ",
+        expected_message_count=3,
     )
 
     assert request.session_id == "session-1"
@@ -356,3 +346,46 @@ def test_summarization_result_is_immutable() -> None:
     result = SummarizationResult(text="Summary", source_document_ids=("doc-1",))
 
     assert isinstance(result.source_document_ids, tuple)
+
+
+def test_summarization_request_keeps_expected_message_count() -> None:
+    request = SummarizationRequest(
+        instruction="Summarize",
+        chat_id=-100,
+        session_id="session-1",
+        expected_message_count=137,
+    )
+
+    assert request.expected_message_count == 137
+
+
+def test_summarization_request_allows_zero_expected_messages() -> None:
+    request = SummarizationRequest(
+        instruction="Summarize",
+        chat_id=-100,
+        session_id="session-1",
+        expected_message_count=0,
+    )
+
+    assert request.expected_message_count == 0
+
+
+def test_summarization_request_requires_expected_message_count() -> None:
+    # There is deliberately no default: a request without it could not be gated.
+    with pytest.raises(TypeError):
+        SummarizationRequest(  # type: ignore[call-arg]
+            instruction="Summarize",
+            chat_id=-100,
+            session_id="session-1",
+        )
+
+
+@pytest.mark.parametrize("expected", [-1, True, False, 1.5, "3", None])
+def test_summarization_request_rejects_invalid_expected_message_count(expected: object) -> None:
+    with pytest.raises(InvalidSummarizationRequestError, match="expected_message_count"):
+        SummarizationRequest(
+            instruction="Summarize",
+            chat_id=-100,
+            session_id="session-1",
+            expected_message_count=expected,  # type: ignore[arg-type]
+        )

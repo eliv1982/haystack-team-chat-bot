@@ -146,7 +146,6 @@ def test_runtime_uses_configured_telegram_bot_factory(settings: Settings) -> Non
 
     with (
         patch("runtime.create_indexing_pipeline", return_value=MagicMock()),
-        patch("runtime.create_query_pipeline", return_value=MagicMock()),
         patch("runtime.create_summarization_pipeline", return_value=MagicMock()),
         patch("runtime.create_configured_telegram_bot", return_value=mock_bot) as create_bot,
     ):

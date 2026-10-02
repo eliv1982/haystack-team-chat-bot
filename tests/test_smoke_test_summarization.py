@@ -14,7 +14,6 @@ from models import SummarizationRequest, SummarizationResult
 from scripts.smoke_test_summarization import (
     EXPECTED_DOCUMENT_COUNT,
     OTHER_CHAT_ID,
-    SUMMARIZATION_CONTEXT_QUERY,
     SUMMARIZATION_INSTRUCTION,
     TARGET_CHAT_ID,
     SmokeCleanupError,
@@ -147,23 +146,22 @@ def test_build_summarization_request_uses_exact_values() -> None:
     request = build_summarization_request(corpus)
 
     assert request == SummarizationRequest(
-        context_query=SUMMARIZATION_CONTEXT_QUERY,
         instruction=SUMMARIZATION_INSTRUCTION,
         chat_id=TARGET_CHAT_ID,
         session_id=corpus.target_session_id,
+        expected_message_count=4,
     )
-    assert request.context_query == SUMMARIZATION_CONTEXT_QUERY
     assert request.instruction == SUMMARIZATION_INSTRUCTION
+    # The smoke session is registered with exactly its four target messages.
+    assert request.expected_message_count == len(corpus.target_document_ids) == 4
 
 
 def test_build_summarization_request_does_not_mutate_inputs() -> None:
     corpus = _corpus()
-    original_context = SUMMARIZATION_CONTEXT_QUERY
     original_instruction = SUMMARIZATION_INSTRUCTION
 
     build_summarization_request(corpus)
 
-    assert SUMMARIZATION_CONTEXT_QUERY == original_context
     assert SUMMARIZATION_INSTRUCTION == original_instruction
 
 
@@ -598,8 +596,7 @@ def test_wait_for_all_documents_absent_times_out_when_expected_id_remains() -> N
 @patch("scripts.smoke_test_summarization.wait_for_all_documents_visible")
 @patch("scripts.smoke_test_summarization.SummarizationService")
 @patch("scripts.smoke_test_summarization.create_summarization_pipeline")
-@patch("scripts.smoke_test_summarization.RetrievalService")
-@patch("scripts.smoke_test_summarization.create_query_pipeline")
+@patch("scripts.smoke_test_summarization.SessionDocumentService")
 @patch("scripts.smoke_test_summarization.IndexingService")
 @patch("scripts.smoke_test_summarization.create_indexing_pipeline")
 @patch("scripts.smoke_test_summarization.create_pinecone_document_store")
@@ -611,8 +608,7 @@ def test_run_smoke_test_success(
     mock_create_store: MagicMock,
     mock_create_indexing_pipeline: MagicMock,
     mock_indexing_service_cls: MagicMock,
-    mock_create_query_pipeline: MagicMock,
-    mock_retrieval_service_cls: MagicMock,
+    mock_session_document_service_cls: MagicMock,
     mock_create_summarization_pipeline: MagicMock,
     mock_summarization_service_cls: MagicMock,
     mock_wait_visible: MagicMock,
@@ -700,8 +696,7 @@ def test_run_smoke_test_rejects_non_seven_documents_written(
 @patch("scripts.smoke_test_summarization.wait_for_all_documents_visible")
 @patch("scripts.smoke_test_summarization.SummarizationService")
 @patch("scripts.smoke_test_summarization.create_summarization_pipeline")
-@patch("scripts.smoke_test_summarization.RetrievalService")
-@patch("scripts.smoke_test_summarization.create_query_pipeline")
+@patch("scripts.smoke_test_summarization.SessionDocumentService")
 @patch("scripts.smoke_test_summarization.IndexingService")
 @patch("scripts.smoke_test_summarization.create_indexing_pipeline")
 @patch("scripts.smoke_test_summarization.create_pinecone_document_store")
@@ -713,8 +708,7 @@ def test_run_smoke_test_visibility_error_skips_summarization(
     mock_create_store: MagicMock,
     mock_create_indexing_pipeline: MagicMock,
     mock_indexing_service_cls: MagicMock,
-    mock_create_query_pipeline: MagicMock,
-    mock_retrieval_service_cls: MagicMock,
+    mock_session_document_service_cls: MagicMock,
     mock_create_summarization_pipeline: MagicMock,
     mock_summarization_service_cls: MagicMock,
     mock_wait_visible: MagicMock,
@@ -740,7 +734,7 @@ def test_run_smoke_test_visibility_error_skips_summarization(
         exit_code = run_smoke_test()
 
     assert exit_code == 1
-    mock_create_query_pipeline.assert_not_called()
+    mock_session_document_service_cls.assert_not_called()
     mock_summarization_service_cls.assert_not_called()
 
 
@@ -748,8 +742,7 @@ def test_run_smoke_test_visibility_error_skips_summarization(
 @patch("scripts.smoke_test_summarization.wait_for_all_documents_visible")
 @patch("scripts.smoke_test_summarization.SummarizationService")
 @patch("scripts.smoke_test_summarization.create_summarization_pipeline")
-@patch("scripts.smoke_test_summarization.RetrievalService")
-@patch("scripts.smoke_test_summarization.create_query_pipeline")
+@patch("scripts.smoke_test_summarization.SessionDocumentService")
 @patch("scripts.smoke_test_summarization.IndexingService")
 @patch("scripts.smoke_test_summarization.create_indexing_pipeline")
 @patch("scripts.smoke_test_summarization.create_pinecone_document_store")
@@ -761,8 +754,7 @@ def test_run_smoke_test_grounding_failure_is_not_masked(
     mock_create_store: MagicMock,
     mock_create_indexing_pipeline: MagicMock,
     mock_indexing_service_cls: MagicMock,
-    mock_create_query_pipeline: MagicMock,
-    mock_retrieval_service_cls: MagicMock,
+    mock_session_document_service_cls: MagicMock,
     mock_create_summarization_pipeline: MagicMock,
     mock_summarization_service_cls: MagicMock,
     mock_wait_visible: MagicMock,
@@ -802,8 +794,7 @@ def test_run_smoke_test_grounding_failure_is_not_masked(
 @patch("scripts.smoke_test_summarization.wait_for_all_documents_visible")
 @patch("scripts.smoke_test_summarization.SummarizationService")
 @patch("scripts.smoke_test_summarization.create_summarization_pipeline")
-@patch("scripts.smoke_test_summarization.RetrievalService")
-@patch("scripts.smoke_test_summarization.create_query_pipeline")
+@patch("scripts.smoke_test_summarization.SessionDocumentService")
 @patch("scripts.smoke_test_summarization.IndexingService")
 @patch("scripts.smoke_test_summarization.create_indexing_pipeline")
 @patch("scripts.smoke_test_summarization.create_pinecone_document_store")
@@ -815,8 +806,7 @@ def test_run_smoke_test_fails_when_cleanup_not_confirmed(
     mock_create_store: MagicMock,
     mock_create_indexing_pipeline: MagicMock,
     mock_indexing_service_cls: MagicMock,
-    mock_create_query_pipeline: MagicMock,
-    mock_retrieval_service_cls: MagicMock,
+    mock_session_document_service_cls: MagicMock,
     mock_create_summarization_pipeline: MagicMock,
     mock_summarization_service_cls: MagicMock,
     mock_wait_visible: MagicMock,
@@ -859,36 +849,36 @@ def test_find_document_by_id_returns_exact_match() -> None:
     assert find_document_by_id(documents, corpus.documents[0].id) is corpus.documents[0]
 
 
-def test_summarization_service_orchestration_single_retrieval_and_pipeline_call() -> None:
-    retrieval_service = MagicMock()
+def test_summarization_service_orchestration_single_fetch_and_pipeline_call() -> None:
+    session_documents = MagicMock()
     pipeline = MagicMock()
     corpus = _corpus()
     documents = list(corpus.documents[:4])
-    retrieval_service.retrieve.return_value = documents
+    session_documents.fetch.return_value = documents
     pipeline.run.return_value = {
         "llm": {"replies": [HaystackChatMessage.from_assistant(_valid_summary_text())]}
     }
 
     from summarization_service import SummarizationService
 
-    service = SummarizationService(retrieval_service, pipeline)
+    service = SummarizationService(session_documents, pipeline)
     request = build_summarization_request(corpus)
     result = service.summarize(request)
 
-    retrieval_service.retrieve.assert_called_once()
+    session_documents.fetch.assert_called_once()
     pipeline.run.assert_called_once()
     assert set(result.source_document_ids) == corpus.target_document_ids
 
 
-def test_summarization_service_empty_retrieval_does_not_call_pipeline() -> None:
-    retrieval_service = MagicMock()
+def test_summarization_service_empty_session_does_not_call_pipeline() -> None:
+    session_documents = MagicMock()
     pipeline = MagicMock()
-    retrieval_service.retrieve.return_value = []
+    session_documents.fetch.return_value = []
     corpus = _corpus()
 
     from summarization_service import NoSummarizationContextError, SummarizationService
 
-    service = SummarizationService(retrieval_service, pipeline)
+    service = SummarizationService(session_documents, pipeline)
 
     with pytest.raises(NoSummarizationContextError):
         service.summarize(build_summarization_request(corpus))
@@ -896,15 +886,15 @@ def test_summarization_service_empty_retrieval_does_not_call_pipeline() -> None:
     pipeline.run.assert_not_called()
 
 
-def test_summarization_service_retrieval_exception_does_not_call_pipeline() -> None:
-    retrieval_service = MagicMock()
+def test_summarization_service_fetch_exception_does_not_call_pipeline() -> None:
+    session_documents = MagicMock()
     pipeline = MagicMock()
-    retrieval_service.retrieve.side_effect = RuntimeError("retrieval failed")
+    session_documents.fetch.side_effect = RuntimeError("retrieval failed")
     corpus = _corpus()
 
     from summarization_service import SummarizationService
 
-    service = SummarizationService(retrieval_service, pipeline)
+    service = SummarizationService(session_documents, pipeline)
 
     with pytest.raises(RuntimeError, match="retrieval failed"):
         service.summarize(build_summarization_request(corpus))
@@ -913,15 +903,15 @@ def test_summarization_service_retrieval_exception_does_not_call_pipeline() -> N
 
 
 def test_summarization_service_llm_exception_does_not_retry_pipeline() -> None:
-    retrieval_service = MagicMock()
+    session_documents = MagicMock()
     pipeline = MagicMock()
     corpus = _corpus()
-    retrieval_service.retrieve.return_value = list(corpus.documents[:4])
+    session_documents.fetch.return_value = list(corpus.documents[:4])
     pipeline.run.side_effect = RuntimeError("llm failed")
 
     from summarization_service import SummarizationService
 
-    service = SummarizationService(retrieval_service, pipeline)
+    service = SummarizationService(session_documents, pipeline)
 
     with pytest.raises(RuntimeError, match="llm failed"):
         service.summarize(build_summarization_request(corpus))
@@ -948,7 +938,9 @@ def test_run_smoke_test_indexing_error_does_not_start_summarization() -> None:
         patch("scripts.smoke_test_summarization.create_pinecone_document_store") as mock_create_store,
         patch("scripts.smoke_test_summarization.create_indexing_pipeline"),
         patch("scripts.smoke_test_summarization.IndexingService") as mock_indexing_service_cls,
-        patch("scripts.smoke_test_summarization.create_query_pipeline") as mock_create_query_pipeline,
+        patch(
+            "scripts.smoke_test_summarization.SessionDocumentService"
+        ) as mock_session_document_service_cls,
         patch("scripts.smoke_test_summarization.SummarizationService") as mock_summarization_service_cls,
         patch("scripts.smoke_test_summarization.wait_for_all_documents_absent", return_value=1),
     ):
@@ -969,5 +961,5 @@ def test_run_smoke_test_indexing_error_does_not_start_summarization() -> None:
             exit_code = run_smoke_test()
 
     assert exit_code == 1
-    mock_create_query_pipeline.assert_not_called()
+    mock_session_document_service_cls.assert_not_called()
     mock_summarization_service_cls.assert_not_called()

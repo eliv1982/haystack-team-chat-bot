@@ -45,7 +45,14 @@ def _build_openai_embedder_kwargs(settings: Settings) -> dict[str, object]:
 
 
 def _build_document_embedder_kwargs(settings: Settings) -> dict[str, object]:
-    return {**_build_openai_embedder_kwargs(settings), "progress_bar": False}
+    # raise_on_failure=True is required: by default Haystack logs a failed embedding
+    # request and passes the document on without a vector, after which the Pinecone
+    # store writes a dummy vector and reports the document as written.
+    return {
+        **_build_openai_embedder_kwargs(settings),
+        "progress_bar": False,
+        "raise_on_failure": True,
+    }
 
 
 def _build_openai_chat_generator_kwargs(settings: Settings) -> dict[str, object]:

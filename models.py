@@ -124,23 +124,19 @@ class RetrievalRequest:
 
 @dataclass(frozen=True, slots=True)
 class SummarizationRequest:
-    """A scoped summarization request with retrieval and instruction boundaries."""
+    """A summarization request for every message of one chat session.
 
-    context_query: str
+    ``expected_message_count`` is the number of messages the session registry counted
+    as successfully indexed. The summary is only built if exactly that many session
+    documents can be loaded.
+    """
+
     instruction: str
     chat_id: int
     session_id: str
+    expected_message_count: int
 
     def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "context_query",
-            _validate_non_empty_text(
-                self.context_query,
-                "context_query",
-                error_type=InvalidSummarizationRequestError,
-            ),
-        )
         object.__setattr__(
             self,
             "instruction",
@@ -169,6 +165,17 @@ class SummarizationRequest:
                 error_type=InvalidSummarizationRequestError,
             ),
         )
+        expected = _validate_int_field(
+            self.expected_message_count,
+            "expected_message_count",
+            positive=False,
+            error_type=InvalidSummarizationRequestError,
+        )
+        if expected < 0:
+            raise InvalidSummarizationRequestError(
+                "expected_message_count must not be negative"
+            )
+        object.__setattr__(self, "expected_message_count", expected)
 
 
 @dataclass(frozen=True, slots=True)

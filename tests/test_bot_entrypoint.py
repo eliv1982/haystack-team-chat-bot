@@ -3,14 +3,25 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
+import io
 import logging
+import traceback
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
+import telebot
 
 import bot
 import runtime
+from config import ConfigurationError
+from pinecone_preflight import PineconeIndexNotFoundError
+
+# Shaped like a real Telegram bot token: "<bot id>:<secret>".
+TELEGRAM_TOKEN = "123456789:AAH-s3cretTokenValue_0123456789abcdefghi"
+TOKEN_SECRET_PART = TELEGRAM_TOKEN.split(":", 1)[1]
 
 
 @pytest.fixture
@@ -19,7 +30,7 @@ def runtime_components() -> runtime.RuntimeComponents:
         document_store=MagicMock(name="document_store"),
         session_store=MagicMock(name="session_store"),
         indexing_service=MagicMock(name="indexing_service"),
-        retrieval_service=MagicMock(name="retrieval_service"),
+        session_document_service=MagicMock(name="session_document_service"),
         summarization_service=MagicMock(name="summarization_service"),
         telegram_application_service=MagicMock(name="telegram_application_service"),
         telegram_summary_application_service=MagicMock(
@@ -63,7 +74,8 @@ def test_main_wires_startup_once(runtime_components: runtime.RuntimeComponents) 
     run_polling.assert_called_once_with(runtime_components.bot)
 
 
-def test_main_build_failure_does_not_start_polling() -> None:
+def test_main_build_failure_does_not_start_polling(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.ERROR)
     with (
         patch("bot.configure_logging"),
         patch("bot.build_runtime", side_effect=RuntimeError("build failed")),
@@ -71,10 +83,12 @@ def test_main_build_failure_does_not_start_polling() -> None:
     ):
         from bot import main
 
-        with pytest.raises(RuntimeError, match="build failed"):
+        with pytest.raises(SystemExit) as excinfo:
             main()
 
+    assert excinfo.value.code == 1
     run_polling.assert_not_called()
+    assert "Startup failed: RuntimeError" in caplog.text
 
 
 def test_main_polling_failure_does_not_rebuild(runtime_components: runtime.RuntimeComponents) -> None:
@@ -85,9 +99,10 @@ def test_main_polling_failure_does_not_rebuild(runtime_components: runtime.Runti
     ):
         from bot import main
 
-        with pytest.raises(RuntimeError, match="polling failed"):
+        with pytest.raises(SystemExit) as excinfo:
             main()
 
+    assert excinfo.value.code == 1
     build_runtime.assert_called_once_with()
 
 
@@ -108,23 +123,102 @@ def test_main_keyboard_interrupt_is_handled_gracefully(
     assert "Shutdown requested" in caplog.text
 
 
-def test_main_error_logging_does_not_expose_secrets(
-    runtime_components: runtime.RuntimeComponents,
+@pytest.mark.parametrize(
+    "error",
+    [
+        ConfigurationError("Missing required environment variable: TELEGRAM_BOT_TOKEN"),
+        PineconeIndexNotFoundError("Pinecone index not found: team-chat"),
+    ],
+)
+def test_main_logs_message_of_project_authored_startup_errors(
+    error: Exception,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.ERROR)
     with (
         patch("bot.configure_logging"),
-        patch(
-            "bot.build_runtime",
-            side_effect=RuntimeError("build failed"),
-        ),
-        patch("bot.run_polling") as run_polling,
+        patch("bot.build_runtime", side_effect=error),
     ):
-        from bot import main
+        with pytest.raises(SystemExit) as excinfo:
+            bot.main()
 
-        with pytest.raises(RuntimeError):
-            main()
+    assert excinfo.value.code == 1
+    assert str(error) in caplog.text
 
-    run_polling.assert_not_called()
-    assert "secret-telegram-token" not in caplog.text
+
+def _telegram_network_error() -> requests.exceptions.ConnectionError:
+    # Mirrors a real requests error: the message embeds the full request URL,
+    # which for the Telegram API contains the bot token.
+    return requests.exceptions.ConnectionError(
+        "HTTPSConnectionPool(host='api.telegram.org', port=443): Max retries exceeded "
+        f"with url: /bot{TELEGRAM_TOKEN}/setMyCommands"
+    )
+
+
+def test_main_does_not_expose_token_from_telegram_network_error_at_startup(
+    runtime_components: runtime.RuntimeComponents,
+    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The command menu call fails inside telebot with the token in the error text.
+
+    Nothing is stubbed between ``main()`` and the failing HTTP call: the real
+    run_polling, command-menu configuration and telebot request code all run.
+    """
+    telebot_log = io.StringIO()
+    telebot_handler = logging.StreamHandler(telebot_log)
+    telebot_logger = logging.getLogger("TeleBot")
+    previous_level = telebot_logger.level
+    telebot_logger.addHandler(telebot_handler)
+    telebot_logger.setLevel(logging.DEBUG)
+
+    def failing_request(*args: object, **kwargs: object) -> None:
+        raise _telegram_network_error()
+
+    monkeypatch.setattr(requests.Session, "request", failing_request)
+    real_bot = telebot.TeleBot(TELEGRAM_TOKEN, threaded=False)
+    components = dataclasses.replace(runtime_components, bot=real_bot)
+    caplog.set_level(logging.DEBUG)
+
+    try:
+        with (
+            patch("bot.configure_logging"),
+            patch("bot.build_runtime", return_value=components),
+        ):
+            with pytest.raises(SystemExit) as excinfo:
+                bot.main()
+    finally:
+        telebot_logger.removeHandler(telebot_handler)
+        telebot_logger.setLevel(previous_level)
+
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    rendered_traceback = "".join(
+        traceback.format_exception(type(excinfo.value), excinfo.value, excinfo.value.__traceback__)
+    )
+    everything = "\n".join(
+        [caplog.text, captured.out, captured.err, telebot_log.getvalue(), rendered_traceback]
+    )
+    assert TELEGRAM_TOKEN not in everything
+    assert TOKEN_SECRET_PART not in everything
+    assert "ConnectionError" in caplog.text
+
+
+def test_main_does_not_expose_token_from_unexpected_build_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    with (
+        patch("bot.configure_logging"),
+        patch("bot.build_runtime", side_effect=_telegram_network_error()),
+    ):
+        with pytest.raises(SystemExit) as excinfo:
+            bot.main()
+
+    rendered_traceback = "".join(
+        traceback.format_exception(type(excinfo.value), excinfo.value, excinfo.value.__traceback__)
+    )
+    assert TELEGRAM_TOKEN not in caplog.text + rendered_traceback
+    assert TOKEN_SECRET_PART not in caplog.text + rendered_traceback
+    assert "Startup failed: ConnectionError" in caplog.text

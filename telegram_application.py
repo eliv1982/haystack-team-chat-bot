@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from threading import RLock
 
@@ -20,7 +21,10 @@ from telegram_adapter import (
     is_telegram_command,
     normalize_sent_at,
     telegram_text_message_to_chat_message,
+    unsupported_sender_reason,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TelegramApplicationError(Exception):
@@ -100,6 +104,18 @@ class TelegramApplicationService:
                 return None
 
             if is_summary_phrase_text(message.text):
+                return None
+
+            # Anonymous admins and other on-behalf-of-a-chat senders have no user id,
+            # which the domain model requires; they are ignored rather than recorded
+            # under an invented identity.
+            sender_reason = unsupported_sender_reason(message)
+            if sender_reason is not None:
+                logger.debug(
+                    "Ignored message from unsupported sender: chat_id=%s reason=%s",
+                    chat_id,
+                    sender_reason,
+                )
                 return None
 
             chat_message = telegram_text_message_to_chat_message(

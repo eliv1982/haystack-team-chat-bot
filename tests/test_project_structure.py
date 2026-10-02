@@ -21,6 +21,8 @@ PYTHON_MODULES = (
     "pipelines",
     "indexing_service",
     "retrieval_service",
+    "session_documents",
+    "error_reporting",
     "summarization_prompt",
     "summarization_service",
     "session_store",

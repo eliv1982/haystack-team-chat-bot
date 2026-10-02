@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from os import getenv
 from typing import Final
 
@@ -24,14 +24,18 @@ class ConfigurationError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class Settings:
-    """Immutable application settings."""
+    """Immutable application settings.
 
-    telegram_bot_token: str
-    openai_api_key: str
+    Credential fields are excluded from ``repr`` so that logging or displaying a
+    ``Settings`` instance never exposes them.
+    """
+
+    telegram_bot_token: str = field(repr=False)
+    openai_api_key: str = field(repr=False)
     api_base_url: str | None
     openai_model: str
     embedding_model: str
-    pinecone_api_key: str
+    pinecone_api_key: str = field(repr=False)
     pinecone_index_name: str
     pinecone_namespace: str
     pinecone_dimension: int

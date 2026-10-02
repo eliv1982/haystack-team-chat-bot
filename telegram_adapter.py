@@ -75,6 +75,51 @@ def is_telegram_command(text: str | None) -> bool:
     return text.lstrip().startswith("/")
 
 
+def command_target_username(text: str | None) -> str | None:
+    """Return the bot a command is addressed to: "/cmd@Bot args" -> "Bot".
+
+    Returns None when the text is not a command or names no bot ("/cmd"). A command
+    with an empty target ("/cmd@") yields an empty string.
+    """
+    if text is None or not is_telegram_command(text):
+        return None
+    token = text.split(maxsplit=1)[0]
+    _, separator, target = token.partition("@")
+    return target if separator else None
+
+
+def is_command_addressed_to(text: str | None, bot_username: str | None) -> bool:
+    """Return True for "/cmd" and "/cmd@<bot_username>"; False for other bots' commands.
+
+    Usernames are compared case-insensitively. If the bot's own username is unknown,
+    only commands that name no bot are accepted.
+    """
+    if not is_telegram_command(text):
+        return False
+    target = command_target_username(text)
+    if target is None:
+        return True
+    normalized_target = normalize_username(target)
+    normalized_own = normalize_username(bot_username)
+    if normalized_target is None or normalized_own is None:
+        return False
+    return normalized_target.casefold() == normalized_own.casefold()
+
+
+def unsupported_sender_reason(message: telebot.types.Message) -> str | None:
+    """Return why a message cannot be attributed to a group participant, else None.
+
+    Messages sent on behalf of a chat (anonymous group admins, a linked channel,
+    "send as" identities) carry ``sender_chat`` and a fake or service ``from`` user,
+    so no real participant identity exists. Bot users are not participants either.
+    """
+    if message.sender_chat is not None:
+        return "sender_chat"
+    if message.from_user is not None and message.from_user.is_bot:
+        return "bot_user"
+    return None
+
+
 def is_summary_phrase_text(text: object) -> bool:
     if not isinstance(text, str):
         return False

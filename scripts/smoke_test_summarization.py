@@ -27,20 +27,15 @@ from models import ChatMessage, SummarizationRequest, SummarizationResult  # noq
 from pinecone_preflight import PineconeIndexInfo, validate_existing_pinecone_index  # noqa: E402
 from pipelines import (  # noqa: E402
     create_indexing_pipeline,
-    create_query_pipeline,
     create_summarization_pipeline,
 )
-from retrieval_service import RetrievalService  # noqa: E402
+from session_documents import SessionDocumentService  # noqa: E402
 from summarization_service import SummarizationService  # noqa: E402
 
 TARGET_CHAT_ID = -1_003_004_005_001
 OTHER_CHAT_ID = -1_003_004_005_999
 EXPECTED_DOCUMENT_COUNT = 7
 
-SUMMARIZATION_CONTEXT_QUERY = (
-    "Project Aurora: позиции участников, окончательная дата запуска, "
-    "ответственный за release checklist, срок и резервный канал связи"
-)
 SUMMARIZATION_INSTRUCTION = (
     "Подведи итог обсуждения на русском языке. "
     "Отрази тему, ключевые позиции участников, зафиксированное решение, "
@@ -293,10 +288,10 @@ def build_smoke_corpus(
 def build_summarization_request(corpus: SmokeCorpus) -> SummarizationRequest:
     """Build the production summarization request for the target session."""
     return SummarizationRequest(
-        context_query=SUMMARIZATION_CONTEXT_QUERY,
         instruction=SUMMARIZATION_INSTRUCTION,
         chat_id=TARGET_CHAT_ID,
         session_id=corpus.target_session_id,
+        expected_message_count=len(corpus.target_document_ids),
     )
 
 
@@ -630,11 +625,10 @@ def run_smoke_test() -> int:
         print(f"Visibility attempts: {visibility_attempts}")
         print("Visibility PASS")
 
-        query_pipeline = create_query_pipeline(settings, document_store)
-        retrieval_service = RetrievalService(query_pipeline, top_k=settings.retrieval_top_k)
+        session_documents = SessionDocumentService(document_store)
         summarization_pipeline = create_summarization_pipeline(settings)
         summarization_service = SummarizationService(
-            retrieval_service=retrieval_service,
+            session_documents=session_documents,
             summarization_pipeline=summarization_pipeline,
         )
 

@@ -39,6 +39,7 @@ def _make_message(
     username: str | None = "alice",
     text: str = "Hello, team!",
     date: object | None = None,
+    sender_chat: Chat | None = None,
 ) -> Message:
     user = User(
         id=user_id,
@@ -48,14 +49,50 @@ def _make_message(
         username=username,
     )
     chat = Chat(id=chat_id, type=chat_type, title="Team Chat")
+    options: dict[str, object] = {"text": text}
+    if sender_chat is not None:
+        options["sender_chat"] = sender_chat
     return Message(
         message_id=message_id,
         from_user=user,
         date=date if date is not None else _utc_timestamp(),
         chat=chat,
         content_type="text",
-        options={"text": text},
+        options=options,
         json_string="{}",
+    )
+
+
+def _anonymous_admin_message(*, chat_id: int = -1001234567890, text: str = "Anonymous hello") -> Message:
+    """Payload Telegram sends for a group admin posting anonymously.
+
+    ``from`` is the fake GroupAnonymousBot user and ``sender_chat`` is the group itself.
+    """
+    return _make_message(
+        chat_id=chat_id,
+        message_id=77,
+        user_id=1087968824,
+        is_bot=True,
+        first_name="Group",
+        last_name=None,
+        username="GroupAnonymousBot",
+        text=text,
+        sender_chat=Chat(id=chat_id, type="supergroup", title="Team Chat"),
+    )
+
+
+def _linked_channel_message(*, chat_id: int = -1001234567890) -> Message:
+    """Payload for a linked channel post forwarded into the discussion group."""
+    return _make_message(
+        chat_id=chat_id,
+        message_id=78,
+        user_id=777000,
+        is_bot=False,
+        first_name="Telegram",
+        last_name=None,
+        username=None,
+        text="Channel announcement",
+        sender_chat=Chat(id=-1007654321000, type="channel", title="Announcements"),
     )
 
 
@@ -242,13 +279,85 @@ def test_record_adapter_failure_does_not_index_or_increment(
     indexing_service: MagicMock,
 ) -> None:
     application_service.start_listening(_make_message(text="/start_listening"))
-    bot_message = _make_message(text="From bot", message_id=43, is_bot=True)
+    malformed = _make_message(text="Bad date", message_id=43, date=-5)
 
     with pytest.raises(TelegramAdapterError):
-        application_service.record_text_message(bot_message)
+        application_service.record_text_message(malformed)
 
     indexing_service.index_messages.assert_not_called()
     assert session_store.get_active_session(-1001234567890).message_count == 0
+
+
+def test_record_ignores_bot_user_messages_without_error(
+    application_service: TelegramApplicationService,
+    session_store: InMemorySessionStore,
+    indexing_service: MagicMock,
+) -> None:
+    application_service.start_listening(_make_message(text="/start_listening"))
+
+    result = application_service.record_text_message(
+        _make_message(text="From bot", message_id=43, is_bot=True)
+    )
+
+    assert result is None
+    indexing_service.index_messages.assert_not_called()
+    assert session_store.get_active_session(-1001234567890).message_count == 0
+
+
+@pytest.mark.parametrize(
+    "message_factory",
+    [_anonymous_admin_message, _linked_channel_message],
+    ids=["anonymous-admin", "linked-channel"],
+)
+def test_record_ignores_messages_sent_on_behalf_of_a_chat(
+    application_service: TelegramApplicationService,
+    session_store: InMemorySessionStore,
+    indexing_service: MagicMock,
+    message_factory: object,
+) -> None:
+    application_service.start_listening(_make_message(text="/start_listening"))
+
+    result = application_service.record_text_message(message_factory())  # type: ignore[operator]
+
+    assert result is None
+    indexing_service.index_messages.assert_not_called()
+    assert session_store.get_active_session(-1001234567890).message_count == 0
+
+
+def test_anonymous_admin_message_does_not_disturb_recording_of_real_participants(
+    application_service: TelegramApplicationService,
+    session_store: InMemorySessionStore,
+    indexing_service: MagicMock,
+) -> None:
+    application_service.start_listening(_make_message(text="/start_listening"))
+
+    application_service.record_text_message(_make_message(message_id=50, text="Before"))
+    application_service.record_text_message(_anonymous_admin_message())
+    application_service.record_text_message(_make_message(message_id=51, text="After"))
+
+    assert indexing_service.index_messages.call_count == 2
+    assert session_store.get_active_session(-1001234567890).message_count == 2
+
+
+def test_anonymous_admin_can_still_start_a_session(
+    application_service: TelegramApplicationService,
+    session_store: InMemorySessionStore,
+) -> None:
+    # Only recording is skipped for on-behalf-of-a-chat senders; commands keep working.
+    session = application_service.start_listening(
+        _anonymous_admin_message(text="/start_listening")
+    )
+
+    assert session.started_by_name == "Group"
+    assert session_store.get_active_session(-1001234567890) == session
+
+
+def test_ignored_sender_does_not_use_the_indexing_service_when_not_listening(
+    application_service: TelegramApplicationService,
+    indexing_service: MagicMock,
+) -> None:
+    assert application_service.record_text_message(_anonymous_admin_message()) is None
+    indexing_service.index_messages.assert_not_called()
 
 
 def test_record_uses_independent_sessions_per_chat(

@@ -10,12 +10,18 @@ import pytest
 from telebot.types import Chat, Message, User
 
 from models import SummarizationResult
+from session_documents import (
+    SessionIncompleteError,
+    SessionInconsistentError,
+    SessionTooLargeError,
+)
 from session_store import InMemorySessionStore
 from summarization_service import NoSummarizationContextError, SummarizationServiceError
 from telegram_application import UnsupportedTelegramChatError
 from telegram_summary_application import (
-    SUMMARIZATION_CONTEXT_QUERY,
     SUMMARIZATION_INSTRUCTION,
+    SUMMARY_COMPLETENESS_ATTEMPTS,
+    SUMMARY_COMPLETENESS_RETRY_DELAY_SECONDS,
     NoSummarizableSessionError,
     TelegramSummaryApplicationService,
 )
@@ -166,10 +172,10 @@ def test_summarize_builds_exact_request(
 
     summarization_service.summarize.assert_called_once()
     request = summarization_service.summarize.call_args.args[0]
-    assert request.context_query == SUMMARIZATION_CONTEXT_QUERY
     assert request.instruction == SUMMARIZATION_INSTRUCTION
     assert request.chat_id == -1001234567890
     assert request.session_id == "telegram-session-test"
+    assert request.expected_message_count == 0
 
 
 def test_summarize_calls_service_once(
@@ -329,3 +335,279 @@ def test_summary_logs_safe_observability_fields_only(
     assert "telegram-session-test" not in caplog.text
     assert "-1001234567890" not in caplog.text
     assert "doc-1" not in caplog.text
+
+
+# --- completeness gate and bounded retry --------------------------------------
+
+
+def _incomplete(expected: int = 137, fetched: int = 136) -> SessionIncompleteError:
+    return SessionIncompleteError(expected=expected, fetched=fetched)
+
+
+@pytest.fixture
+def sleeps() -> list[float]:
+    return []
+
+
+@pytest.fixture
+def retrying_service(
+    session_store: InMemorySessionStore,
+    summarization_service: MagicMock,
+    sleeps: list[float],
+) -> TelegramSummaryApplicationService:
+    return TelegramSummaryApplicationService(
+        session_store=session_store,
+        summarization_service=summarization_service,
+        max_attempts=3,
+        retry_delay_seconds=1.5,
+        sleep=sleeps.append,
+    )
+
+
+def test_request_carries_the_session_message_count_as_the_expected_count(
+    summary_service: TelegramSummaryApplicationService,
+    session_store: InMemorySessionStore,
+    summarization_service: MagicMock,
+) -> None:
+    _start_session(session_store, message_count=137)
+
+    summary_service.summarize_discussion(_make_message())
+
+    request = summarization_service.summarize.call_args.args[0]
+    assert request.expected_message_count == 137
+
+
+def test_request_for_a_completed_session_uses_its_final_message_count(
+    summary_service: TelegramSummaryApplicationService,
+    session_store: InMemorySessionStore,
+    summarization_service: MagicMock,
+) -> None:
+    _start_session(session_store, message_count=4)
+    session_store.stop_session(-1001234567890)
+
+    summary_service.summarize_discussion(_make_message())
+
+    request = summarization_service.summarize.call_args.args[0]
+    assert request.expected_message_count == 4
+
+
+def test_complete_session_is_summarized_without_any_retry_or_wait(
+    retrying_service: TelegramSummaryApplicationService,
+    session_store: InMemorySessionStore,
+    summarization_service: MagicMock,
+    sleeps: list[float],
+) -> None:
+    _start_session(session_store, message_count=137)
+
+    result = retrying_service.summarize_discussion(_make_message())
+
+    assert result.text == "Краткий итог обсуждения."
+    summarization_service.summarize.assert_called_once()
+    assert sleeps == []
+
+
+def test_a_bounded_retry_recovers_from_index_lag_and_then_summarizes(
+    retrying_service: TelegramSummaryApplicationService,
+    session_store: InMemorySessionStore,
+    summarization_service: MagicMock,
+    sleeps: list[float],
+) -> None:
+    _start_session(session_store, message_count=137)
+    expected_result = SummarizationResult(text="Итог", source_document_ids=("doc-1",))
+    summarization_service.summarize.side_effect = [_incomplete(), expected_result]
+
+    result = retrying_service.summarize_discussion(_make_message())
+
+    assert result is expected_result
+    assert summarization_service.summarize.call_count == 2
+    assert sleeps == [1.5]
+
+
+def test_a_second_retry_may_still_recover(
+    retrying_service: TelegramSummaryApplicationService,
+    session_store: InMemorySessionStore,
+    summarization_service: MagicMock,
+    sleeps: list[float],
+) -> None:
+    _start_session(session_store, message_count=137)
+    expected_result = SummarizationResult(text="Итог", source_document_ids=("doc-1",))
+    summarization_service.summarize.side_effect = [
+        _incomplete(fetched=130),
+        _incomplete(fetched=136),
+        expected_result,
+    ]
+
+    result = retrying_service.summarize_discussion(_make_message())
+
+    assert result is expected_result
+    assert summarization_service.summarize.call_count == 3
+    assert sleeps == [1.5, 1.5]
+
+
+def test_persistent_shortfall_is_refused_after_exactly_the_bounded_attempts(
+    retrying_service: TelegramSummaryApplicationService,
+    session_store: InMemorySessionStore,
+    summarization_service: MagicMock,
+    sleeps: list[float],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _start_session(session_store, message_count=137)
+    summarization_service.summarize.side_effect = _incomplete()
+    caplog.set_level(logging.INFO)
+
+    with pytest.raises(SessionIncompleteError) as excinfo:
+        retrying_service.summarize_discussion(_make_message())
+
+    assert (excinfo.value.expected, excinfo.value.fetched) == (137, 136)
+    assert summarization_service.summarize.call_count == 3
+    assert sleeps == [1.5, 1.5]  # no wait after the final attempt
+    assert "Summary completed" not in caplog.text
+    assert "summary refused: message_count=137 visible=136 attempts=3" in caplog.text
+
+
+def test_more_documents_than_counted_fails_at_once_without_retry_or_wait(
+    retrying_service: TelegramSummaryApplicationService,
+    session_store: InMemorySessionStore,
+    summarization_service: MagicMock,
+    sleeps: list[float],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _start_session(session_store, message_count=137)
+    summarization_service.summarize.side_effect = SessionInconsistentError(
+        expected=137, fetched=138
+    )
+    caplog.set_level(logging.INFO)
+
+    with pytest.raises(SessionInconsistentError):
+        retrying_service.summarize_discussion(_make_message())
+
+    summarization_service.summarize.assert_called_once()
+    assert sleeps == []
+    error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(error_records) == 1
+    assert "message_count=137 documents=138" in error_records[0].getMessage()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        NoSummarizationContextError("empty"),
+        SessionTooLargeError(1_000),
+        RuntimeError("provider down"),
+    ],
+    ids=["no-context", "too-large", "provider-error"],
+)
+def test_only_an_incomplete_session_is_retried(
+    retrying_service: TelegramSummaryApplicationService,
+    session_store: InMemorySessionStore,
+    summarization_service: MagicMock,
+    sleeps: list[float],
+    error: Exception,
+) -> None:
+    _start_session(session_store, message_count=3)
+    summarization_service.summarize.side_effect = error
+
+    with pytest.raises(type(error)):
+        retrying_service.summarize_discussion(_make_message())
+
+    summarization_service.summarize.assert_called_once()
+    assert sleeps == []
+
+
+def test_every_attempt_re_reads_the_message_count(
+    retrying_service: TelegramSummaryApplicationService,
+    session_store: InMemorySessionStore,
+    summarization_service: MagicMock,
+    sleeps: list[float],
+) -> None:
+    # A message recorded while waiting for the index must raise the expected count
+    # instead of showing up as an "extra" document on the next attempt.
+    _start_session(session_store, message_count=137)
+    expected_result = SummarizationResult(text="Итог", source_document_ids=("doc-1",))
+    seen_counts: list[int] = []
+
+    def summarize(request: object) -> SummarizationResult:
+        seen_counts.append(request.expected_message_count)  # type: ignore[attr-defined]
+        if len(seen_counts) == 1:
+            session_store.record_message(-1001234567890)  # arrives during the wait
+            raise _incomplete()
+        return expected_result
+
+    summarization_service.summarize.side_effect = summarize
+
+    result = retrying_service.summarize_discussion(_make_message())
+
+    assert result is expected_result
+    assert seen_counts == [137, 138]
+    assert sleeps == [1.5]
+
+
+def test_each_retry_resolves_the_session_again(
+    retrying_service: TelegramSummaryApplicationService,
+    session_store: InMemorySessionStore,
+    summarization_service: MagicMock,
+) -> None:
+    _start_session(session_store, message_count=5)
+    expected_result = SummarizationResult(text="Итог", source_document_ids=("doc-1",))
+    requests: list[object] = []
+
+    def summarize(request: object) -> SummarizationResult:
+        requests.append(request)
+        if len(requests) == 1:
+            session_store.stop_session(-1001234567890)  # the session ends meanwhile
+            raise _incomplete(expected=5, fetched=4)
+        return expected_result
+
+    summarization_service.summarize.side_effect = summarize
+
+    retrying_service.summarize_discussion(_make_message())
+
+    assert [r.session_id for r in requests] == ["telegram-session-test"] * 2  # type: ignore[attr-defined]
+    assert [r.expected_message_count for r in requests] == [5, 5]  # type: ignore[attr-defined]
+
+
+def test_a_single_attempt_configuration_never_retries(
+    session_store: InMemorySessionStore,
+    summarization_service: MagicMock,
+    sleeps: list[float],
+) -> None:
+    service = TelegramSummaryApplicationService(
+        session_store=session_store,
+        summarization_service=summarization_service,
+        max_attempts=1,
+        sleep=sleeps.append,
+    )
+    _start_session(session_store, message_count=137)
+    summarization_service.summarize.side_effect = _incomplete()
+
+    with pytest.raises(SessionIncompleteError):
+        service.summarize_discussion(_make_message())
+
+    summarization_service.summarize.assert_called_once()
+    assert sleeps == []
+
+
+def test_default_retry_bounds_are_short_and_fixed() -> None:
+    assert SUMMARY_COMPLETENESS_ATTEMPTS == 3
+    assert SUMMARY_COMPLETENESS_RETRY_DELAY_SECONDS == 1.5
+    total_wait = SUMMARY_COMPLETENESS_RETRY_DELAY_SECONDS * (SUMMARY_COMPLETENESS_ATTEMPTS - 1)
+    assert total_wait <= 5
+
+
+@pytest.mark.parametrize("max_attempts", [0, -1, True, 1.5, None])
+def test_constructor_rejects_invalid_attempt_counts(max_attempts: object) -> None:
+    with pytest.raises(ValueError, match="max_attempts"):
+        TelegramSummaryApplicationService(
+            session_store=MagicMock(),
+            summarization_service=MagicMock(),
+            max_attempts=max_attempts,  # type: ignore[arg-type]
+        )
+
+
+def test_constructor_rejects_a_negative_retry_delay() -> None:
+    with pytest.raises(ValueError, match="retry_delay_seconds"):
+        TelegramSummaryApplicationService(
+            session_store=MagicMock(),
+            summarization_service=MagicMock(),
+            retry_delay_seconds=-0.1,
+        )

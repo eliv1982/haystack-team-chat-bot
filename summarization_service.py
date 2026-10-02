@@ -1,4 +1,4 @@
-"""Service for retrieving context and generating team chat summaries."""
+"""Service for loading a whole chat session and generating its summary."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from haystack import Document, Pipeline
 from haystack.dataclasses.chat_message import ChatMessage as HaystackChatMessage
 from haystack.dataclasses.chat_message import ChatRole
 
-from models import RetrievalRequest, SummarizationRequest, SummarizationResult
-from retrieval_service import RetrievalService
+from models import SummarizationRequest, SummarizationResult
+from session_documents import SessionDocumentService
 
 
 class SummarizationServiceError(Exception):
@@ -17,7 +17,7 @@ class SummarizationServiceError(Exception):
 
 
 class NoSummarizationContextError(SummarizationServiceError):
-    """Raised when retrieval returned no documents to summarize."""
+    """Raised when the session has no documents to summarize."""
 
 
 class SummarizationResultError(SummarizationServiceError):
@@ -25,26 +25,29 @@ class SummarizationResultError(SummarizationServiceError):
 
 
 class SummarizationService:
-    """Runs retrieval and the summarization pipeline for a scoped request."""
+    """Loads all documents of a session and runs the summarization pipeline."""
 
     def __init__(
         self,
-        retrieval_service: RetrievalService,
+        session_documents: SessionDocumentService,
         summarization_pipeline: Pipeline,
     ) -> None:
-        self._retrieval_service = retrieval_service
+        self._session_documents = session_documents
         self._summarization_pipeline = summarization_pipeline
 
     def summarize(self, request: SummarizationRequest) -> SummarizationResult:
-        """Retrieve validated context and generate a summary."""
-        retrieval_request = RetrievalRequest(
-            query=request.context_query,
+        """Summarize every message of the session, oldest first.
+
+        Raises before the model is called if the session's documents are not exactly
+        the ``request.expected_message_count`` messages it registered.
+        """
+        documents = self._session_documents.fetch(
             chat_id=request.chat_id,
             session_id=request.session_id,
+            expected_count=request.expected_message_count,
         )
-        documents = self._retrieval_service.retrieve(retrieval_request)
         if not documents:
-            raise NoSummarizationContextError("retrieval returned no documents to summarize")
+            raise NoSummarizationContextError("session has no documents to summarize")
 
         _validate_documents_for_summarization(documents, request)
 

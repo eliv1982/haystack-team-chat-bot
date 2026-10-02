@@ -195,3 +195,41 @@ def test_trimmed_custom_openai_base_url_is_preserved(
     settings = load_settings(dotenv_path=None)
 
     assert settings.api_base_url == "https://api.example.com/v1"
+
+
+def test_settings_repr_and_str_hide_credentials(
+    clean_config_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secrets = {
+        "TELEGRAM_BOT_TOKEN": "123456789:AAH-s3cretTokenValue_0123456789abcdefghi",
+        "OPENAI_API_KEY": "sk-test-s3cret-openai-key",
+        "PINECONE_API_KEY": "pcsk-s3cret-pinecone-key",
+    }
+    _set_env(monkeypatch, {**REQUIRED_ENV, **secrets})
+
+    settings = load_settings(dotenv_path=None)
+
+    for rendered in (repr(settings), str(settings), f"{settings!r}", f"{settings}"):
+        for secret in secrets.values():
+            assert secret not in rendered
+        for secret_part in ("s3cret", "AAH-"):
+            assert secret_part not in rendered
+        # Non-secret fields stay visible so the representation remains useful.
+        assert "test-index" in rendered
+        assert "test-chat-model" in rendered
+
+
+def test_settings_secret_fields_remain_usable_and_comparable(
+    clean_config_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_env(monkeypatch, REQUIRED_ENV)
+
+    first = load_settings(dotenv_path=None)
+    second = load_settings(dotenv_path=None)
+
+    assert first.telegram_bot_token == "test-telegram-token"
+    assert first.openai_api_key == "test-openai-key"
+    assert first.pinecone_api_key == "test-pinecone-key"
+    assert first == second
