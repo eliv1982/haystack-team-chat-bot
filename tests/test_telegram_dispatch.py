@@ -16,7 +16,6 @@ import openai
 import pytest
 import requests
 import telebot
-from haystack.core.errors import PipelineRuntimeError
 from haystack.document_stores.in_memory import InMemoryDocumentStore
 from pinecone.exceptions import ServiceException
 from telebot.apihelper import ApiTelegramException
@@ -31,10 +30,11 @@ from fakes import (
     anonymous_admin_message,
     telegram_message,
 )
-from indexing_service import IndexingService
+from indexing_service import IndexingProviderError, IndexingService
 from models import SummarizationResult
 from pipelines import create_indexing_pipeline
 from session_store import InMemorySessionStore
+from summarization_service import SummarizationProviderError
 from telegram_application import TelegramApplicationService
 from telegram_handlers import (
     _RECORD_FAILURE_NOTICE_INTERVAL_SECONDS,
@@ -321,7 +321,7 @@ def test_provider_outage_never_raises_into_telebot_and_does_not_count_messages(
     harness.replies.assert_called_once()
     assert harness.replies.call_args.args[1] == _RECORD_INTERNAL_ERROR_REPLY
     assert caplog.text.count("Handler failed: handler=record_text") == 10
-    assert "PipelineRuntimeError" in caplog.text
+    assert "IndexingProviderError <- PipelineRuntimeError <- " in caplog.text
     assert "message 3" not in caplog.text
 
 
@@ -368,8 +368,8 @@ def test_vector_store_write_outage_is_handled_like_a_provider_outage(
 
 def test_summary_failure_never_raises_into_telebot(harness: _Harness) -> None:
     harness.send(telegram_message("/start_listening"))
-    harness.summarization_service.summarize.side_effect = PipelineRuntimeError(
-        "llm", None, "openai unavailable"
+    harness.summarization_service.summarize.side_effect = SummarizationProviderError(
+        "summarization provider request failed"
     )
     harness.sent.reset_mock()
 
@@ -394,8 +394,8 @@ def test_programming_defect_while_indexing_propagates_and_counts_nothing(harness
     harness.replies.assert_not_called()
 
     # The chat's notice allowance is untouched: an actual outage is still announced once.
-    harness.indexing_service.index_messages.side_effect = PipelineRuntimeError(
-        "document_embedder", None, "openai unavailable"
+    harness.indexing_service.index_messages.side_effect = IndexingProviderError(
+        "indexing provider request failed"
     )
     harness.send(telegram_message("hello again", message_id=3))
     harness.replies.assert_called_once()

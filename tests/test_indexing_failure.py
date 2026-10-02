@@ -1,7 +1,9 @@
 """Regression tests: a failed embedding must fail indexing instead of being stored.
 
 The production indexing pipeline runs unchanged; only the OpenAI client behind its
-embedder is faked.
+embedder is faked. The failure reaches the caller as ``IndexingProviderError``, chained
+to Haystack's ``PipelineRuntimeError`` and the OpenAI error; the exception-boundary
+tests (test_provider_failure_boundary.py) cover what is not translated.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from haystack.document_stores.in_memory import InMemoryDocumentStore
 from config import Settings
 from fakes import GROUP_CHAT_ID as CHAT_ID
 from fakes import FakeOpenAIClient, telegram_message
-from indexing_service import IndexingService
+from indexing_service import IndexingProviderError, IndexingService
 from models import ChatMessage
 from pipelines import create_indexing_pipeline
 from session_store import InMemorySessionStore
@@ -66,10 +68,12 @@ def test_embedding_failure_raises_and_nothing_is_written(
     store: InMemoryDocumentStore,
     sample_message: ChatMessage,
 ) -> None:
-    with pytest.raises(PipelineRuntimeError) as excinfo:
+    with pytest.raises(IndexingProviderError) as excinfo:
         IndexingService(failing_pipeline).index_messages([sample_message])  # type: ignore[arg-type]
 
-    assert isinstance(excinfo.value.__cause__, openai.APIError)
+    pipeline_error = excinfo.value.__cause__
+    assert isinstance(pipeline_error, PipelineRuntimeError)
+    assert isinstance(pipeline_error.__cause__, openai.APIError)
     assert store.count_documents() == 0
 
 
@@ -80,7 +84,7 @@ def test_embedding_failure_does_not_count_the_message_in_the_session(
     application_service, session_store = _application(failing_pipeline)
     application_service.start_listening(telegram_message("/start_listening", message_id=41))
 
-    with pytest.raises(PipelineRuntimeError):
+    with pytest.raises(IndexingProviderError):
         application_service.record_text_message(telegram_message("Hello, team!", message_id=42))
 
     active = session_store.get_active_session(CHAT_ID)

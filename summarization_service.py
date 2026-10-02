@@ -5,15 +5,25 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from haystack import Document, Pipeline
+from haystack.core.errors import PipelineRuntimeError
 from haystack.dataclasses.chat_message import ChatMessage as HaystackChatMessage
 from haystack.dataclasses.chat_message import ChatRole
 
 from models import SummarizationRequest, SummarizationResult
+from provider_errors import OPENAI_REQUEST_FAILURES, is_provider_failure
 from session_documents import SessionDocumentService
 
 
 class SummarizationServiceError(Exception):
-    """Raised when summarization input or pipeline output is invalid."""
+    """Raised when summarization input or pipeline output is invalid, or a provider failed."""
+
+
+class SummarizationProviderError(SummarizationServiceError):
+    """Raised when a request to OpenAI failed while summarizing.
+
+    Means exactly that: an expected outage, rate limit or rejected request of the
+    provider. A bug inside a pipeline component is never reported as this error.
+    """
 
 
 class NoSummarizationContextError(SummarizationServiceError):
@@ -51,15 +61,20 @@ class SummarizationService:
 
         _validate_documents_for_summarization(documents, request)
 
-        result = self._summarization_pipeline.run(
-            {
-                "prompt_builder": {
-                    "documents": list(documents),
-                    "instruction": request.instruction,
-                }
-            },
-            include_outputs_from={"llm"},
-        )
+        try:
+            result = self._summarization_pipeline.run(
+                {
+                    "prompt_builder": {
+                        "documents": list(documents),
+                        "instruction": request.instruction,
+                    }
+                },
+                include_outputs_from={"llm"},
+            )
+        except PipelineRuntimeError as exc:
+            if is_provider_failure(exc, OPENAI_REQUEST_FAILURES):
+                raise SummarizationProviderError("summarization provider request failed") from exc
+            raise
         reply_text = _extract_reply_text(result)
         return SummarizationResult(
             text=reply_text,

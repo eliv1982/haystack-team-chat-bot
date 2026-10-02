@@ -2,20 +2,29 @@
 
 ``FakeOpenAIClient`` replaces the HTTP client behind the production pipelines, so
 everything up to the HTTP call (prompt building, request shaping, response parsing,
-document writing) runs for real. ``telegram_message`` and ``FakeClock`` build the
-inputs that the real TeleBot dispatch and the handlers need.
+document writing) runs for real. ``FakePineconeIndex`` does the same for the real
+``PineconeDocumentStore``. ``telegram_message`` and ``FakeClock`` build the inputs that
+the real TeleBot dispatch and the handlers need.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 from openai.types import CreateEmbeddingResponse, Embedding
 from openai.types.chat import ChatCompletion, ChatCompletionMessage
 from openai.types.chat.chat_completion import Choice
 from openai.types.create_embedding_response import Usage
 from telebot.types import Chat, Message, User
+
+# Haystack is imported inside the functions that need it, never here: conftest imports
+# this module before it opts Haystack out of telemetry, and Haystack reads that setting
+# when it is first imported.
+if TYPE_CHECKING:
+    from haystack import Document
+    from haystack_integrations.document_stores.pinecone import PineconeDocumentStore
 
 # Shaped like a real Telegram bot token: "<bot id>:<secret>".
 BOT_TOKEN = "123456789:AAH-s3cretTokenValue_0123456789abcdefghi"
@@ -79,6 +88,68 @@ class FakeOpenAIClient:
         """The text of the only chat request made so far, all roles joined."""
         assert len(self.chat_requests) == 1, f"expected one chat request, got {len(self.chat_requests)}"
         return "\n".join(str(message["content"]) for message in self.chat_requests[0])
+
+
+class FakePineconeIndex:
+    """The Pinecone SDK's index client, answering from memory.
+
+    Set ``upsert_error`` or ``query_error`` to make the matching call raise. Documents
+    given to ``serve`` come back from every query, shaped like Pinecone's matches.
+    """
+
+    def __init__(self) -> None:
+        self.upsert_error: Exception | None = None
+        self.query_error: Exception | None = None
+        self.upserted: list[object] = []
+        self._served: list[Document] = []
+
+    def serve(self, documents: Sequence[Document]) -> None:
+        self._served = list(documents)
+
+    def upsert(self, *, vectors: Sequence[object], **_: object) -> SimpleNamespace:
+        if self.upsert_error is not None:
+            raise self.upsert_error
+        self.upserted.extend(vectors)
+        return SimpleNamespace(upserted_count=len(vectors))
+
+    def query(self, **_: object) -> SimpleNamespace:
+        if self.query_error is not None:
+            raise self.query_error
+        # PineconeDocumentStore mutates each match's metadata, so build them per query.
+        return SimpleNamespace(
+            matches=[
+                {
+                    "id": document.id,
+                    "values": list(DEFAULT_VECTOR),
+                    "score": 0.5,
+                    "metadata": {**document.meta, "content": document.content},
+                }
+                for document in self._served
+            ]
+        )
+
+    def describe_index_stats(self) -> dict[str, object]:
+        return {}
+
+
+def pinecone_document_store(index: FakePineconeIndex) -> PineconeDocumentStore:
+    """The production store class with ``index`` as its remote client.
+
+    Setting ``_index`` is the seam: the store only connects to Pinecone, listing and
+    possibly creating indexes, while that attribute is unset.
+    """
+    from haystack.utils import Secret
+    from haystack_integrations.document_stores.pinecone import PineconeDocumentStore
+
+    store = PineconeDocumentStore(
+        api_key=Secret.from_token("test-pinecone-key"),
+        index="test-index",
+        namespace="test-namespace",
+        dimension=len(DEFAULT_VECTOR),
+        show_progress=False,
+    )
+    store._index = index  # type: ignore[assignment]
+    return store
 
 
 def telegram_message(

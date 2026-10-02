@@ -8,6 +8,7 @@ from typing import Final
 from haystack import Document
 from haystack.document_stores.types import DocumentStore
 
+from provider_errors import PINECONE_REQUEST_FAILURES
 from retrieval_filters import build_session_filter
 from retrieval_service import (
     RetrievalInvariantError,
@@ -26,6 +27,14 @@ SESSION_DOCUMENT_LIMIT: Final[int] = 1_000
 
 class SessionDocumentsError(Exception):
     """Raised when a session's documents cannot be loaded reliably."""
+
+
+class SessionDocumentProviderError(SessionDocumentsError):
+    """Raised when a request to the vector store (Pinecone) failed while loading.
+
+    Means exactly that: an expected outage, rate limit or rejected request of the
+    provider. A malformed argument or any other bug is never reported as this error.
+    """
 
 
 class SessionTooLargeError(SessionDocumentsError):
@@ -96,7 +105,8 @@ class SessionDocumentService:
 
         * ``SessionTooLargeError`` if ``expected_count`` cannot be loaded completely;
         * ``SessionIncompleteError`` if fewer documents are visible than expected;
-        * ``SessionInconsistentError`` if more documents are visible than expected.
+        * ``SessionInconsistentError`` if more documents are visible than expected;
+        * ``SessionDocumentProviderError`` if the store's request itself failed.
         """
         if isinstance(chat_id, bool) or not isinstance(chat_id, int):
             raise SessionDocumentsError("chat_id must be an integer")
@@ -110,9 +120,11 @@ class SessionDocumentService:
         if expected_count >= self._limit:
             raise SessionTooLargeError(self._limit)
 
-        documents = self._document_store.filter_documents(
-            filters=build_session_filter(chat_id, session_id)
-        )
+        filters = build_session_filter(chat_id, session_id)
+        try:
+            documents = self._document_store.filter_documents(filters=filters)
+        except PINECONE_REQUEST_FAILURES as exc:
+            raise SessionDocumentProviderError("document store request failed") from exc
         if not isinstance(documents, list):
             raise RetrievalServiceError("document store must return a list of documents")
 

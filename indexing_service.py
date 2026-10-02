@@ -5,13 +5,26 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from haystack import Pipeline
+from haystack.core.errors import PipelineRuntimeError
 
 from documents import chat_message_to_document
 from models import ChatMessage
+from provider_errors import OPENAI_REQUEST_FAILURES, PINECONE_REQUEST_FAILURES, is_provider_failure
+
+# The indexing pipeline embeds with OpenAI and writes to Pinecone.
+_PROVIDER_REQUEST_FAILURES = (*OPENAI_REQUEST_FAILURES, *PINECONE_REQUEST_FAILURES)
 
 
 class IndexingServiceError(Exception):
-    """Raised when indexing input or pipeline output is invalid."""
+    """Raised when indexing input or pipeline output is invalid, or a provider failed."""
+
+
+class IndexingProviderError(IndexingServiceError):
+    """Raised when a request to OpenAI or Pinecone failed while indexing.
+
+    Means exactly that: an expected outage, rate limit or rejected request of the
+    provider. A bug inside a pipeline component is never reported as this error.
+    """
 
 
 class IndexingService:
@@ -26,10 +39,15 @@ class IndexingService:
             raise IndexingServiceError("messages must not be empty")
 
         documents = [chat_message_to_document(message) for message in messages]
-        result = self._pipeline.run(
-            {"document_embedder": {"documents": documents}},
-            include_outputs_from={"writer"},
-        )
+        try:
+            result = self._pipeline.run(
+                {"document_embedder": {"documents": documents}},
+                include_outputs_from={"writer"},
+            )
+        except PipelineRuntimeError as exc:
+            if is_provider_failure(exc, _PROVIDER_REQUEST_FAILURES):
+                raise IndexingProviderError("indexing provider request failed") from exc
+            raise
         return _extract_documents_written(result)
 
 

@@ -10,6 +10,7 @@ the real services.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
@@ -17,15 +18,17 @@ import pytest
 import requests
 import telebot
 from haystack.core.errors import PipelineRuntimeError
-from pinecone.exceptions import ServiceException
+from pinecone import PineconeError, ServiceError
+from pinecone.exceptions import PineconeApiTypeError
 from telebot.apihelper import ApiTelegramException
 from telebot.types import Message
 
 from fakes import BOT_TOKEN, GROUP_CHAT_ID, FakeClock, telegram_message
-from indexing_service import IndexingServiceError
+from indexing_service import IndexingProviderError, IndexingServiceError
 from models import InvalidChatMessageError, InvalidSummarizationRequestError, SummarizationResult
 from retrieval_service import RetrievalServiceError
 from session_documents import (
+    SessionDocumentProviderError,
     SessionDocumentsError,
     SessionIncompleteError,
     SessionInconsistentError,
@@ -37,7 +40,11 @@ from session_store import (
     NoActiveSessionError,
     SessionAlreadyActiveError,
 )
-from summarization_service import NoSummarizationContextError, SummarizationResultError
+from summarization_service import (
+    NoSummarizationContextError,
+    SummarizationProviderError,
+    SummarizationResultError,
+)
 from telegram_adapter import TelegramAdapterError
 from telegram_application import (
     DiscussionStatus,
@@ -108,9 +115,9 @@ def _summary_result(text: str = "Итог обсуждения") -> Summarizatio
     return SummarizationResult(text=text, source_document_ids=("doc-1",))
 
 
-def _provider_failure(detail: str = "component failed") -> PipelineRuntimeError:
-    """A failed OpenAI or Pinecone call, as Haystack reports it once it ran in a pipeline."""
-    return PipelineRuntimeError("component", None, detail)
+def _provider_failure(detail: str = "component failed") -> IndexingProviderError:
+    """A failed OpenAI or Pinecone request while indexing, as the indexing service reports it."""
+    return IndexingProviderError(detail)
 
 
 def _telegram_network_error() -> requests.exceptions.ConnectionError:
@@ -254,8 +261,8 @@ def test_summary_sends_the_exact_result_text(harness: _Harness, trigger: str) ->
         (NoSummarizableSessionError("missing"), _SUMMARY_NO_SESSION_REPLY),
         (NoSummarizationContextError("empty"), _SUMMARY_NO_CONTEXT_REPLY),
         (SessionInconsistentError(expected=137, fetched=138), _SUMMARY_INTERNAL_ERROR_REPLY),
-        (_provider_failure("openai unavailable"), _SUMMARY_INTERNAL_ERROR_REPLY),
-        (ServiceException("pinecone unavailable", status_code=503), _SUMMARY_INTERNAL_ERROR_REPLY),
+        (SummarizationProviderError("openai unavailable"), _SUMMARY_INTERNAL_ERROR_REPLY),
+        (SessionDocumentProviderError("pinecone unavailable"), _SUMMARY_INTERNAL_ERROR_REPLY),
         (RetrievalServiceError("store returned garbage"), _SUMMARY_INTERNAL_ERROR_REPLY),
         (SummarizationResultError("llm reply was empty"), _SUMMARY_INTERNAL_ERROR_REPLY),
         (TelegramAdapterError("message.chat is required"), _SUMMARY_INTERNAL_ERROR_REPLY),
@@ -264,7 +271,7 @@ def test_summary_sends_the_exact_result_text(harness: _Harness, trigger: str) ->
         "no-session",
         "no-context",
         "inconsistent-session",
-        "pipeline-failure",
+        "openai-failure",
         "pinecone-failure",
         "invalid-store-output",
         "invalid-llm-output",
@@ -289,7 +296,7 @@ def test_summary_provider_failure_log_has_no_exception_text(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO)
-    harness.summary.summarize_discussion.side_effect = _provider_failure(
+    harness.summary.summarize_discussion.side_effect = SummarizationProviderError(
         f"openai said: {SECRET_CONTENT}"
     )
 
@@ -366,14 +373,12 @@ def test_recorded_text_is_passed_to_the_service_without_any_reply(harness: _Harn
     "error",
     [
         _provider_failure("provider down"),
-        ServiceException("pinecone unavailable", status_code=503),
         IndexingServiceError("pipeline result is missing writer.documents_written"),
         UnexpectedIndexingResultError("expected documents_written=1, got 0"),
         TelegramAdapterError("message.text must be a non-empty string"),
     ],
     ids=[
-        "pipeline-failure",
-        "pinecone-failure",
+        "provider-failure",
         "invalid-pipeline-output",
         "unexpected-indexing-result",
         "unconvertible-message",
@@ -462,7 +467,7 @@ def test_handler_failure_log_has_no_exception_text_content_or_token(
     harness.send(telegram_message(SECRET_CONTENT))
 
     assert (
-        f"Handler failed: handler=record_text chat_id={GROUP_CHAT_ID} error=PipelineRuntimeError"
+        f"Handler failed: handler=record_text chat_id={GROUP_CHAT_ID} error=IndexingProviderError"
         in caplog.text
     )
     assert SECRET_CONTENT not in caplog.text
@@ -612,6 +617,79 @@ def test_contract_violations_next_to_expected_failures_still_propagate(
 
     harness.replies.assert_not_called()
     harness.sent.assert_not_called()
+
+
+def _pipeline_error_caused_by(cause: Exception) -> PipelineRuntimeError:
+    """What ``Pipeline.run()`` raises when a component raised ``cause``."""
+    try:
+        raise PipelineRuntimeError.from_exception("component", type(cause), cause) from cause
+    except PipelineRuntimeError as error:
+        return error
+
+
+# Haystack's wrapper and the Pinecone SDK's errors are not this project's error types.
+# The services translate the failed provider requests among them (and the handlers then
+# answer the chat); whatever still arrives raw is a bug, or an outage the service failed
+# to recognize, and must reach TeleBot rather than be absorbed here.
+_RAW_FRAMEWORK_ERRORS = [
+    pytest.param(
+        lambda: PipelineRuntimeError("component", None, "wrapped"), id="PipelineRuntimeError"
+    ),
+    pytest.param(
+        lambda: _pipeline_error_caused_by(TypeError("component bug")), id="pipeline-caused-by-TypeError"
+    ),
+    pytest.param(
+        lambda: _pipeline_error_caused_by(AssertionError("component invariant")),
+        id="pipeline-caused-by-AssertionError",
+    ),
+    pytest.param(
+        lambda: _pipeline_error_caused_by(ServiceError()), id="pipeline-caused-by-provider-outage"
+    ),
+    pytest.param(lambda: PineconeError("sdk base error"), id="PineconeError"),
+    pytest.param(lambda: PineconeApiTypeError("malformed argument"), id="PineconeApiTypeError"),
+    pytest.param(lambda: ServiceError(), id="raw-ServiceError"),
+]
+
+
+@pytest.mark.parametrize("make_error", _RAW_FRAMEWORK_ERRORS)
+@pytest.mark.parametrize(("text", "service", "method"), _HANDLER_ROUTES)
+def test_raw_framework_and_sdk_errors_propagate_out_of_every_handler(
+    harness: _Harness,
+    caplog: pytest.LogCaptureFixture,
+    text: str,
+    service: str,
+    method: str,
+    make_error: Callable[[], Exception],
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    error = make_error()
+    getattr(getattr(harness, service), method).side_effect = error
+
+    with pytest.raises(type(error)) as raised:
+        harness.send(telegram_message(text))
+
+    assert raised.value is error
+    harness.replies.assert_not_called()
+    harness.sent.assert_not_called()
+    assert "Handler failed" not in caplog.text
+
+
+@pytest.mark.parametrize("make_error", _RAW_FRAMEWORK_ERRORS)
+def test_raw_framework_error_while_recording_does_not_use_up_the_notice_allowance(
+    harness: _Harness,
+    make_error: Callable[[], Exception],
+) -> None:
+    error = make_error()
+    harness.application.record_text_message.side_effect = error
+    with pytest.raises(type(error)):
+        harness.send(telegram_message("first", message_id=1))
+    harness.replies.assert_not_called()
+
+    harness.application.record_text_message.side_effect = _provider_failure()
+    second = telegram_message("second", message_id=2)
+    harness.send(second)
+
+    harness.replies.assert_called_once_with(second, _RECORD_INTERNAL_ERROR_REPLY)
 
 
 # --- Telegram delivery failures -------------------------------------------------
