@@ -16,7 +16,9 @@ import openai
 import pytest
 import requests
 import telebot
+from haystack.core.errors import PipelineRuntimeError
 from haystack.document_stores.in_memory import InMemoryDocumentStore
+from pinecone.exceptions import ServiceException
 from telebot.apihelper import ApiTelegramException
 from telebot.types import Message
 
@@ -344,15 +346,96 @@ def test_outage_notice_is_repeated_only_after_the_interval_and_recovery_resumes_
     assert store.count_documents() == 1
 
 
+def test_vector_store_write_outage_is_handled_like_a_provider_outage(
+    harness: _Harness,
+    settings: Settings,
+    fake_openai: FakeOpenAIClient,
+) -> None:
+    class _UnavailableStore(InMemoryDocumentStore):
+        def write_documents(self, *args: object, **kwargs: object) -> int:
+            raise ServiceException("pinecone unavailable", status_code=503)
+
+    harness.register(IndexingService(create_indexing_pipeline(settings, _UnavailableStore())))
+    harness.send(telegram_message("/start_listening"))
+    harness.replies.reset_mock()
+
+    harness.send(telegram_message("hello", message_id=2))  # must not raise
+
+    assert harness.active_session().message_count == 0
+    harness.replies.assert_called_once()
+    assert harness.replies.call_args.args[1] == _RECORD_INTERNAL_ERROR_REPLY
+
+
 def test_summary_failure_never_raises_into_telebot(harness: _Harness) -> None:
     harness.send(telegram_message("/start_listening"))
-    harness.summarization_service.summarize.side_effect = RuntimeError("openai unavailable")
+    harness.summarization_service.summarize.side_effect = PipelineRuntimeError(
+        "llm", None, "openai unavailable"
+    )
     harness.sent.reset_mock()
 
     harness.send(telegram_message("/summary", message_id=2))  # must not raise
 
     harness.sent.assert_called_once()
     assert "внутренней ошибки" in harness.sent.call_args.args[1]
+
+
+# --- programming defects reach TeleBot through the real application services --
+
+
+def test_programming_defect_while_indexing_propagates_and_counts_nothing(harness: _Harness) -> None:
+    harness.send(telegram_message("/start_listening"))
+    harness.replies.reset_mock()
+    harness.indexing_service.index_messages.side_effect = TypeError("programming defect")
+
+    with pytest.raises(TypeError, match="programming defect"):
+        harness.send(telegram_message("hello", message_id=2))
+
+    assert harness.active_session().message_count == 0
+    harness.replies.assert_not_called()
+
+    # The chat's notice allowance is untouched: an actual outage is still announced once.
+    harness.indexing_service.index_messages.side_effect = PipelineRuntimeError(
+        "document_embedder", None, "openai unavailable"
+    )
+    harness.send(telegram_message("hello again", message_id=3))
+    harness.replies.assert_called_once()
+    assert harness.replies.call_args.args[1] == _RECORD_INTERNAL_ERROR_REPLY
+
+
+def test_programming_defect_while_summarizing_propagates(harness: _Harness) -> None:
+    harness.send(telegram_message("/start_listening"))
+    harness.summarization_service.summarize.side_effect = AssertionError("invariant bug")
+    harness.sent.reset_mock()
+
+    with pytest.raises(AssertionError, match="invariant bug"):
+        harness.send(telegram_message("/summary", message_id=2))
+
+    harness.sent.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("command", "store_method"),
+    [
+        ("/start_listening", "start_session"),
+        ("/stop_listening", "stop_session"),
+        ("/status", "get_active_session"),
+    ],
+)
+def test_programming_defect_in_the_session_store_propagates(
+    harness: _Harness,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    store_method: str,
+) -> None:
+    def defective(*args: object, **kwargs: object) -> None:
+        raise TypeError("programming defect")
+
+    monkeypatch.setattr(harness.session_store, store_method, defective)
+
+    with pytest.raises(TypeError, match="programming defect"):
+        harness.send(telegram_message(command))
+
+    harness.replies.assert_not_called()
 
 
 def test_failed_telegram_reply_never_raises_into_telebot(

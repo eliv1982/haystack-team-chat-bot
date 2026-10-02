@@ -11,15 +11,29 @@ from collections.abc import Callable
 import requests
 import telebot
 import telebot.types
+from haystack.core.errors import PipelineRuntimeError
+from pinecone.exceptions import PineconeException
 from telebot.apihelper import ApiException
 from telebot.util import MAX_MESSAGE_LENGTH, smart_split
 
 from error_reporting import describe_exception
+from indexing_service import IndexingServiceError
+from retrieval_service import RetrievalServiceError
 from session_documents import SessionIncompleteError, SessionTooLargeError
 from session_store import NoActiveSessionError, SessionAlreadyActiveError
-from summarization_service import NoSummarizationContextError
-from telegram_adapter import is_command_addressed_to, is_summary_phrase_text, is_telegram_command
-from telegram_application import DiscussionStatus, TelegramApplicationService, UnsupportedTelegramChatError
+from summarization_service import NoSummarizationContextError, SummarizationServiceError
+from telegram_adapter import (
+    TelegramAdapterError,
+    is_command_addressed_to,
+    is_summary_phrase_text,
+    is_telegram_command,
+)
+from telegram_application import (
+    DiscussionStatus,
+    TelegramApplicationService,
+    UnexpectedIndexingResultError,
+    UnsupportedTelegramChatError,
+)
 from telegram_summary_application import (
     NoSummarizableSessionError,
     TelegramSummaryApplicationService,
@@ -31,6 +45,31 @@ logger = logging.getLogger(__name__)
 # limiting or when the bot lacks rights in a chat; telebot cannot do anything
 # useful with them except restart polling, so handlers absorb them.
 _DELIVERY_ERRORS = (ApiException, requests.RequestException)
+
+# Failures of the providers behind the application services (OpenAI, Pinecone).
+# Haystack wraps whatever a pipeline component raises, such as an OpenAI request error
+# or a Pinecone write error, into PipelineRuntimeError. The session documents are read
+# from the Pinecone store outside any pipeline, so its SDK errors arrive unwrapped.
+_PROVIDER_ERRORS = (PipelineRuntimeError, PineconeException)
+
+# Expected operational failures of recording and summarizing, besides the provider
+# itself failing: output of the pipeline or store that failed validation, and a
+# Telegram message that cannot be converted. Everything else (TypeError,
+# AssertionError, InvalidChatMessageError, ...) is a programming defect. It must
+# propagate: telebot logs it and restarts polling instead of the chat being told an
+# "internal error" that looks like an outage.
+_RECORD_FAILURES = (
+    *_PROVIDER_ERRORS,
+    IndexingServiceError,
+    UnexpectedIndexingResultError,
+    TelegramAdapterError,
+)
+_SUMMARY_FAILURES = (
+    *_PROVIDER_ERRORS,
+    RetrievalServiceError,  # includes SessionInconsistentError
+    SummarizationServiceError,
+    TelegramAdapterError,
+)
 
 # While recording keeps failing (for example during an OpenAI outage) the chat is
 # told at most once per interval instead of once per ordinary message.
@@ -277,7 +316,7 @@ def _make_start_listening_handler(
         except UnsupportedTelegramChatError:
             bot.reply_to(message, _UNSUPPORTED_CHAT_REPLY)
             return
-        except Exception as exc:
+        except TelegramAdapterError as exc:
             _log_handler_failure("start_listening", message, exc)
             bot.reply_to(message, _COMMAND_INTERNAL_ERROR_REPLY)
             return
@@ -301,7 +340,7 @@ def _make_stop_listening_handler(
         except UnsupportedTelegramChatError:
             bot.reply_to(message, _UNSUPPORTED_CHAT_REPLY)
             return
-        except Exception as exc:
+        except TelegramAdapterError as exc:
             _log_handler_failure("stop_listening", message, exc)
             bot.reply_to(message, _COMMAND_INTERNAL_ERROR_REPLY)
             return
@@ -346,7 +385,7 @@ def _make_summary_handler(
         except UnsupportedTelegramChatError:
             bot.send_message(message.chat.id, _SUMMARY_UNSUPPORTED_CHAT_REPLY)
             return
-        except Exception as exc:
+        except _SUMMARY_FAILURES as exc:
             _log_handler_failure("summary", message, exc)
             bot.send_message(message.chat.id, _SUMMARY_INTERNAL_ERROR_REPLY)
             return
@@ -368,7 +407,7 @@ def _make_status_handler(
         except UnsupportedTelegramChatError:
             bot.reply_to(message, _UNSUPPORTED_CHAT_REPLY)
             return
-        except Exception as exc:
+        except TelegramAdapterError as exc:
             _log_handler_failure("status", message, exc)
             bot.reply_to(message, _COMMAND_INTERNAL_ERROR_REPLY)
             return
@@ -405,7 +444,7 @@ def _make_record_text_handler(
     def handler(message: telebot.types.Message) -> None:
         try:
             application_service.record_text_message(message)
-        except Exception as exc:
+        except _RECORD_FAILURES as exc:
             _log_handler_failure("record_text", message, exc)
             if failure_notices.allow(message.chat.id):
                 bot.reply_to(message, _RECORD_INTERNAL_ERROR_REPLY)

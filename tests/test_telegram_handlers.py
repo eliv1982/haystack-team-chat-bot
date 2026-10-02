@@ -16,15 +16,34 @@ from unittest.mock import MagicMock
 import pytest
 import requests
 import telebot
+from haystack.core.errors import PipelineRuntimeError
+from pinecone.exceptions import ServiceException
 from telebot.apihelper import ApiTelegramException
 from telebot.types import Message
 
 from fakes import BOT_TOKEN, GROUP_CHAT_ID, FakeClock, telegram_message
-from models import SummarizationResult
-from session_documents import SessionIncompleteError, SessionInconsistentError, SessionTooLargeError
-from session_store import ListeningSession, NoActiveSessionError, SessionAlreadyActiveError
-from summarization_service import NoSummarizationContextError
-from telegram_application import DiscussionStatus, UnsupportedTelegramChatError
+from indexing_service import IndexingServiceError
+from models import InvalidChatMessageError, InvalidSummarizationRequestError, SummarizationResult
+from retrieval_service import RetrievalServiceError
+from session_documents import (
+    SessionDocumentsError,
+    SessionIncompleteError,
+    SessionInconsistentError,
+    SessionTooLargeError,
+)
+from session_store import (
+    InvalidSessionStoreInputError,
+    ListeningSession,
+    NoActiveSessionError,
+    SessionAlreadyActiveError,
+)
+from summarization_service import NoSummarizationContextError, SummarizationResultError
+from telegram_adapter import TelegramAdapterError
+from telegram_application import (
+    DiscussionStatus,
+    UnexpectedIndexingResultError,
+    UnsupportedTelegramChatError,
+)
 from telegram_handlers import (
     _COMMAND_INTERNAL_ERROR_REPLY,
     _HELP_REPLY,
@@ -87,6 +106,11 @@ def _session(message_count: int) -> ListeningSession:
 
 def _summary_result(text: str = "Итог обсуждения") -> SummarizationResult:
     return SummarizationResult(text=text, source_document_ids=("doc-1",))
+
+
+def _provider_failure(detail: str = "component failed") -> PipelineRuntimeError:
+    """A failed OpenAI or Pinecone call, as Haystack reports it once it ran in a pipeline."""
+    return PipelineRuntimeError("component", None, detail)
 
 
 def _telegram_network_error() -> requests.exceptions.ConnectionError:
@@ -158,14 +182,16 @@ def test_expected_command_errors_get_their_own_reply(
         ("/status", "get_discussion_status"),
     ],
 )
-def test_unexpected_command_failure_replies_and_does_not_reraise(
+def test_unconvertible_telegram_message_in_a_command_gets_a_generic_reply(
     harness: _Harness,
     caplog: pytest.LogCaptureFixture,
     command: str,
     service_method: str,
 ) -> None:
     caplog.set_level(logging.INFO)
-    getattr(harness.application, service_method).side_effect = RuntimeError("unexpected")
+    getattr(harness.application, service_method).side_effect = TelegramAdapterError(
+        "message.from_user is required"
+    )
     message = telegram_message(command)
 
     harness.send(message)
@@ -228,9 +254,22 @@ def test_summary_sends_the_exact_result_text(harness: _Harness, trigger: str) ->
         (NoSummarizableSessionError("missing"), _SUMMARY_NO_SESSION_REPLY),
         (NoSummarizationContextError("empty"), _SUMMARY_NO_CONTEXT_REPLY),
         (SessionInconsistentError(expected=137, fetched=138), _SUMMARY_INTERNAL_ERROR_REPLY),
-        (RuntimeError("openai unavailable"), _SUMMARY_INTERNAL_ERROR_REPLY),
+        (_provider_failure("openai unavailable"), _SUMMARY_INTERNAL_ERROR_REPLY),
+        (ServiceException("pinecone unavailable", status_code=503), _SUMMARY_INTERNAL_ERROR_REPLY),
+        (RetrievalServiceError("store returned garbage"), _SUMMARY_INTERNAL_ERROR_REPLY),
+        (SummarizationResultError("llm reply was empty"), _SUMMARY_INTERNAL_ERROR_REPLY),
+        (TelegramAdapterError("message.chat is required"), _SUMMARY_INTERNAL_ERROR_REPLY),
     ],
-    ids=["no-session", "no-context", "inconsistent-session", "unexpected-error"],
+    ids=[
+        "no-session",
+        "no-context",
+        "inconsistent-session",
+        "pipeline-failure",
+        "pinecone-failure",
+        "invalid-store-output",
+        "invalid-llm-output",
+        "unconvertible-message",
+    ],
 )
 def test_summary_errors_get_one_reply_and_never_reach_telebot(
     harness: _Harness,
@@ -245,12 +284,14 @@ def test_summary_errors_get_one_reply_and_never_reach_telebot(
     harness.sent.assert_called_once_with(GROUP_CHAT_ID, expected_reply)
 
 
-def test_unexpected_summary_failure_log_has_no_exception_text(
+def test_summary_provider_failure_log_has_no_exception_text(
     harness: _Harness,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO)
-    harness.summary.summarize_discussion.side_effect = RuntimeError(f"openai said: {SECRET_CONTENT}")
+    harness.summary.summarize_discussion.side_effect = _provider_failure(
+        f"openai said: {SECRET_CONTENT}"
+    )
 
     harness.send(telegram_message("/summary"))
 
@@ -321,17 +362,40 @@ def test_recorded_text_is_passed_to_the_service_without_any_reply(harness: _Harn
     harness.sent.assert_not_called()
 
 
-def test_record_failure_is_handled_without_reraising_and_replies_once(harness: _Harness) -> None:
+@pytest.mark.parametrize(
+    "error",
+    [
+        _provider_failure("provider down"),
+        ServiceException("pinecone unavailable", status_code=503),
+        IndexingServiceError("pipeline result is missing writer.documents_written"),
+        UnexpectedIndexingResultError("expected documents_written=1, got 0"),
+        TelegramAdapterError("message.text must be a non-empty string"),
+    ],
+    ids=[
+        "pipeline-failure",
+        "pinecone-failure",
+        "invalid-pipeline-output",
+        "unexpected-indexing-result",
+        "unconvertible-message",
+    ],
+)
+def test_expected_record_failure_is_handled_without_reraising_and_replies_once(
+    harness: _Harness,
+    caplog: pytest.LogCaptureFixture,
+    error: Exception,
+) -> None:
+    caplog.set_level(logging.INFO)
     message = telegram_message("Regular text")
-    harness.application.record_text_message.side_effect = RuntimeError("provider down")
+    harness.application.record_text_message.side_effect = error
 
     harness.send(message)  # must not raise into TeleBot
 
     harness.replies.assert_called_once_with(message, _RECORD_INTERNAL_ERROR_REPLY)
+    assert "Handler failed: handler=record_text" in caplog.text
 
 
 def test_record_failures_do_not_spam_the_chat_during_an_outage(harness: _Harness) -> None:
-    harness.application.record_text_message.side_effect = RuntimeError("provider down")
+    harness.application.record_text_message.side_effect = _provider_failure("provider down")
 
     for index in range(25):
         harness.clock.now += 1.0
@@ -342,7 +406,7 @@ def test_record_failures_do_not_spam_the_chat_during_an_outage(harness: _Harness
 
 
 def test_record_failure_notice_is_repeated_after_the_interval(harness: _Harness) -> None:
-    harness.application.record_text_message.side_effect = RuntimeError("provider down")
+    harness.application.record_text_message.side_effect = _provider_failure("provider down")
 
     harness.send(telegram_message("one", message_id=1))
     harness.clock.now += _RECORD_FAILURE_NOTICE_INTERVAL_SECONDS - 1
@@ -355,7 +419,7 @@ def test_record_failure_notice_is_repeated_after_the_interval(harness: _Harness)
 
 
 def test_record_failure_notices_are_throttled_per_chat(harness: _Harness) -> None:
-    harness.application.record_text_message.side_effect = RuntimeError("provider down")
+    harness.application.record_text_message.side_effect = _provider_failure("provider down")
 
     harness.send(telegram_message("a", chat_id=-100, message_id=1))
     harness.send(telegram_message("b", chat_id=-200, message_id=2))
@@ -373,7 +437,7 @@ def test_record_success_never_sends_a_notice(harness: _Harness) -> None:
 
 def test_each_registration_has_its_own_notice_throttle(telegram_bot: telebot.TeleBot) -> None:
     application = MagicMock()
-    application.record_text_message.side_effect = RuntimeError("provider down")
+    application.record_text_message.side_effect = _provider_failure("provider down")
     clock = FakeClock()
     second_bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
     second_bot.reply_to = MagicMock()  # type: ignore[method-assign]
@@ -391,19 +455,163 @@ def test_handler_failure_log_has_no_exception_text_content_or_token(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.DEBUG)
-    harness.application.record_text_message.side_effect = RuntimeError(
+    harness.application.record_text_message.side_effect = _provider_failure(
         f"upstream echoed {SECRET_CONTENT} and /bot{BOT_TOKEN}/getMe"
     )
 
     harness.send(telegram_message(SECRET_CONTENT))
 
     assert (
-        f"Handler failed: handler=record_text chat_id={GROUP_CHAT_ID} error=RuntimeError"
+        f"Handler failed: handler=record_text chat_id={GROUP_CHAT_ID} error=PipelineRuntimeError"
         in caplog.text
     )
     assert SECRET_CONTENT not in caplog.text
     assert BOT_TOKEN not in caplog.text
     assert not any(record.exc_info for record in caplog.records)
+
+
+# --- programming defects are not operational failures --------------------------
+#
+# Handlers answer expected operational failures themselves. Anything else is a defect
+# in this code base: it must reach TeleBot (which logs it and restarts polling), not
+# be turned into a reply that tells the chat an outage happened.
+
+# Every route into an application service: message text, service, method it calls.
+_HANDLER_ROUTES = [
+    pytest.param("/start_listening", "application", "start_listening", id="start"),
+    pytest.param("/stop_listening", "application", "stop_listening", id="stop"),
+    pytest.param("/status", "application", "get_discussion_status", id="status"),
+    pytest.param("/summary", "summary", "summarize_discussion", id="summary-command"),
+    pytest.param("Подведи итог", "summary", "summarize_discussion", id="summary-phrase"),
+    pytest.param(SECRET_CONTENT, "application", "record_text_message", id="record-text"),
+]
+
+_PROGRAMMING_DEFECTS = [
+    pytest.param(TypeError, "programming defect", id="TypeError"),
+    pytest.param(AssertionError, "invariant bug", id="AssertionError"),
+    pytest.param(RuntimeError, "unexpected runtime failure", id="RuntimeError"),
+]
+
+
+@pytest.mark.parametrize(("error_type", "detail"), _PROGRAMMING_DEFECTS)
+@pytest.mark.parametrize(("text", "service", "method"), _HANDLER_ROUTES)
+def test_programming_defects_propagate_out_of_every_handler(
+    harness: _Harness,
+    caplog: pytest.LogCaptureFixture,
+    text: str,
+    service: str,
+    method: str,
+    error_type: type[Exception],
+    detail: str,
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    error = error_type(f"{detail}: {SECRET_CONTENT} /bot{BOT_TOKEN}/getMe")
+    getattr(getattr(harness, service), method).side_effect = error
+
+    with pytest.raises(error_type) as raised:
+        harness.send(telegram_message(text))
+
+    assert raised.value is error
+    harness.replies.assert_not_called()
+    harness.sent.assert_not_called()
+    # The handler neither reports the defect as a handled failure nor logs anything
+    # derived from the exception text or the message content.
+    assert "Handler failed" not in caplog.text
+    assert SECRET_CONTENT not in caplog.text
+    assert BOT_TOKEN not in caplog.text
+
+
+@pytest.mark.parametrize(("error_type", "detail"), _PROGRAMMING_DEFECTS)
+def test_programming_defect_while_recording_is_not_throttled_as_a_provider_outage(
+    harness: _Harness,
+    error_type: type[Exception],
+    detail: str,
+) -> None:
+    harness.application.record_text_message.side_effect = error_type(detail)
+
+    with pytest.raises(error_type):
+        harness.send(telegram_message("first", message_id=1))
+    harness.replies.assert_not_called()
+
+    # The clock has not moved. Had the defect used up the chat's notice allowance, the
+    # real outage that follows would be swallowed silently.
+    harness.application.record_text_message.side_effect = _provider_failure()
+    second = telegram_message("second", message_id=2)
+    harness.send(second)
+
+    harness.replies.assert_called_once_with(second, _RECORD_INTERNAL_ERROR_REPLY)
+
+
+@pytest.mark.parametrize(
+    ("text", "service", "method", "error"),
+    [
+        pytest.param(
+            "/start_listening",
+            "application",
+            "start_listening",
+            InvalidSessionStoreInputError("started_by_user_id must be a positive integer"),
+            id="start-store-input-contract",
+        ),
+        pytest.param(
+            "/stop_listening",
+            "application",
+            "stop_listening",
+            InvalidSessionStoreInputError("chat_id must be an integer, not bool"),
+            id="stop-store-input-contract",
+        ),
+        pytest.param(
+            SECRET_CONTENT,
+            "application",
+            "record_text_message",
+            InvalidChatMessageError("text must not be empty"),
+            id="record-invalid-domain-message",
+        ),
+        pytest.param(
+            SECRET_CONTENT,
+            "application",
+            "record_text_message",
+            UnsupportedTelegramChatError("message.chat.type must be group or supergroup"),
+            id="record-chat-type-filtered-before-the-handler",
+        ),
+        pytest.param(
+            SECRET_CONTENT,
+            "application",
+            "record_text_message",
+            NoActiveSessionError("session vanished while its chat lock was held"),
+            id="record-session-vanished-under-lock",
+        ),
+        pytest.param(
+            "/summary",
+            "summary",
+            "summarize_discussion",
+            SessionDocumentsError("chat_id must be an integer"),
+            id="summary-document-service-argument-contract",
+        ),
+        pytest.param(
+            "/summary",
+            "summary",
+            "summarize_discussion",
+            InvalidSummarizationRequestError("instruction must not be empty"),
+            id="summary-invalid-request",
+        ),
+    ],
+)
+def test_contract_violations_next_to_expected_failures_still_propagate(
+    harness: _Harness,
+    text: str,
+    service: str,
+    method: str,
+    error: Exception,
+) -> None:
+    """Sibling classes of the handled exceptions (ValueError, SessionDocumentsError, ...)
+    are caller errors or broken invariants, so the catches must not be widened to them."""
+    getattr(getattr(harness, service), method).side_effect = error
+
+    with pytest.raises(type(error)):
+        harness.send(telegram_message(text))
+
+    harness.replies.assert_not_called()
+    harness.sent.assert_not_called()
 
 
 # --- Telegram delivery failures -------------------------------------------------
@@ -433,7 +641,7 @@ def test_telegram_delivery_failures_are_absorbed_without_leaking_the_token(
     text: str,
 ) -> None:
     caplog.set_level(logging.DEBUG)
-    harness.application.record_text_message.side_effect = RuntimeError("force a notice")
+    harness.application.record_text_message.side_effect = _provider_failure("force a notice")
     harness.summary.summarize_discussion.return_value = _summary_result("Итог")
     harness.replies.side_effect = delivery_error()  # type: ignore[operator]
     harness.sent.side_effect = delivery_error()  # type: ignore[operator]

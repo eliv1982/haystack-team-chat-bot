@@ -14,11 +14,14 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
+import httpx
+import openai
 import pytest
 import telebot
 from haystack import Document
 from haystack.document_stores.in_memory import InMemoryDocumentStore
 from haystack.document_stores.types import DuplicatePolicy
+from pinecone.exceptions import ServiceException
 
 from config import Settings
 from documents import chat_message_to_document
@@ -507,4 +510,60 @@ def test_an_inconsistent_session_gets_the_generic_error_not_the_retry_hint(
     telegram_bot.process_new_messages([telegram_message("/summary")])  # must not raise
 
     sent.assert_called_once_with(CHAT_ID, _SUMMARY_INTERNAL_ERROR_REPLY)
+    assert llm.chat_requests == []
+
+
+class _FailingStore(_PineconeLikeStore):
+    """A vector store whose queries raise ``error``, as the Pinecone SDK would."""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self._error = error
+
+    def filter_documents(self, filters=None):  # type: ignore[no-untyped-def]
+        raise self._error
+
+
+def test_an_llm_outage_gets_the_generic_error_and_never_raises(
+    telegram_bot: telebot.TeleBot,
+    make_application: Callable[..., TelegramSummaryApplicationService],
+    llm: FakeOpenAIClient,
+) -> None:
+    llm.chat_error = openai.APIConnectionError(
+        request=httpx.Request("POST", "https://api.example.com/v1/chat/completions")
+    )
+    store = _store([_chat_message(index) for index in range(3)])
+    sent = _dispatch(telegram_bot, make_application(store, _session_store(3)))
+
+    telegram_bot.process_new_messages([telegram_message("/summary")])  # must not raise
+
+    sent.assert_called_once_with(CHAT_ID, _SUMMARY_INTERNAL_ERROR_REPLY)
+
+
+def test_a_vector_store_outage_gets_the_generic_error_and_never_raises(
+    telegram_bot: telebot.TeleBot,
+    make_application: Callable[..., TelegramSummaryApplicationService],
+    llm: FakeOpenAIClient,
+) -> None:
+    store = _FailingStore(ServiceException("pinecone unavailable", status_code=503))
+    sent = _dispatch(telegram_bot, make_application(store, _session_store(3)))
+
+    telegram_bot.process_new_messages([telegram_message("/summary")])  # must not raise
+
+    sent.assert_called_once_with(CHAT_ID, _SUMMARY_INTERNAL_ERROR_REPLY)
+    assert llm.chat_requests == []
+
+
+def test_a_programming_defect_while_loading_the_session_propagates(
+    telegram_bot: telebot.TeleBot,
+    make_application: Callable[..., TelegramSummaryApplicationService],
+    llm: FakeOpenAIClient,
+) -> None:
+    store = _FailingStore(TypeError("programming defect"))
+    sent = _dispatch(telegram_bot, make_application(store, _session_store(3)))
+
+    with pytest.raises(TypeError, match="programming defect"):
+        telegram_bot.process_new_messages([telegram_message("/summary")])
+
+    sent.assert_not_called()
     assert llm.chat_requests == []
