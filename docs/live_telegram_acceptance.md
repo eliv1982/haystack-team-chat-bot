@@ -92,7 +92,7 @@ Recorded here for completeness. Its scope is limited, and it must not be read as
 | Field | Value |
 | ----- | ----- |
 | Date | 2026-07-12 |
-| Recorded baseline commit | `45890f2` |
+| Recorded baseline commit | `40cc9ac` |
 | Python / pyTelegramBotAPI / haystack-ai | 3.12.10 / 4.34.0 / 2.31.0 |
 | Pinecone dimension / metric | 1536 / cosine |
 | Scenario | one test supergroup, a four-message discussion |
@@ -100,7 +100,7 @@ Recorded here for completeness. Its scope is limited, and it must not be read as
 Limitations of this record:
 
 - **Superseded summary path.** At that time `/summary` retrieved context by semantic similarity. The whole-session path, the completeness gate and the refusal behavior were added afterwards (2026-10-02) and have not been run live in Telegram.
-- **Unclear tested tree.** The recorded baseline `45890f2` predates most of what the run verified: at that commit only `/start_listening` and `/stop_listening` were handled, with no `/summary`, phrase aliases, `/status`, `/help`, command menu, latest-completed lookup or stricter prompt completeness rules. Those were committed in `2e4e396` together with this document, and the exact tree that was run was not recorded.
+- **Unclear tested tree.** The recorded baseline `40cc9ac` predates most of what the run verified: at that commit only `/start_listening` and `/stop_listening` were handled, with no `/summary`, phrase aliases, `/status`, `/help`, command menu, latest-completed lookup or stricter prompt completeness rules. Those were committed in `0839e4f` together with this document, and the exact tree that was run was not recorded.
 - **Small scale.** One run, four messages, one chat.
 
 What the run reported:
