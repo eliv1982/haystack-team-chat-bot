@@ -2,78 +2,19 @@
 
 from __future__ import annotations
 
-import ast
 import logging
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from haystack.document_stores.in_memory import InMemoryDocumentStore
+from telebot.types import Chat, Message, User
 
 import runtime
 from config import Settings
+from fakes import FakeOpenAIClient
 from pinecone_preflight import PineconeIndexInfo, PineconeIndexNotFoundError
 
-
-@pytest.fixture
-def settings() -> Settings:
-    return Settings(
-        telegram_bot_token="secret-telegram-token",
-        openai_api_key="test-openai-key",
-        api_base_url=None,
-        openai_model="test-chat-model",
-        embedding_model="test-embedding-model",
-        pinecone_api_key="test-pinecone-key",
-        pinecone_index_name="test-index",
-        pinecone_namespace="haystack-team-chat-homework",
-        pinecone_dimension=1536,
-        pinecone_metric="cosine",
-        retrieval_top_k=50,
-    )
-
-
-@pytest.fixture
-def document_store() -> MagicMock:
-    return MagicMock(name="document_store")
-
-
-@pytest.fixture
-def indexing_pipeline() -> MagicMock:
-    return MagicMock(name="indexing_pipeline")
-
-
-@pytest.fixture
-def summarization_pipeline() -> MagicMock:
-    return MagicMock(name="summarization_pipeline")
-
-
-@pytest.fixture
-def indexing_service() -> MagicMock:
-    return MagicMock(name="indexing_service")
-
-
-@pytest.fixture
-def session_document_service() -> MagicMock:
-    return MagicMock(name="session_document_service")
-
-
-@pytest.fixture
-def summarization_service() -> MagicMock:
-    return MagicMock(name="summarization_service")
-
-
-@pytest.fixture
-def session_store() -> MagicMock:
-    return MagicMock(name="session_store")
-
-
-@pytest.fixture
-def telegram_application_service() -> MagicMock:
-    return MagicMock(name="telegram_application_service")
-
-
-@pytest.fixture
-def telegram_summary_application_service() -> MagicMock:
-    return MagicMock(name="telegram_summary_application_service")
+CHAT_ID = -1001234567890
 
 
 @pytest.fixture
@@ -81,170 +22,76 @@ def bot() -> MagicMock:
     return MagicMock(name="bot")
 
 
+def _group_message(text: str, *, message_id: int) -> Message:
+    return Message(
+        message_id=message_id,
+        from_user=User(id=7, is_bot=False, first_name="Alice", username="alice"),
+        date=1_705_320_600 + message_id,
+        chat=Chat(id=CHAT_ID, type="supergroup", title="Team Chat"),
+        content_type="text",
+        options={"text": text},
+        json_string="{}",
+    )
+
+
 @pytest.fixture
-def assemble_patches(
+def assembled(
     settings: Settings,
-    document_store: MagicMock,
-    indexing_pipeline: MagicMock,
-    summarization_pipeline: MagicMock,
-    indexing_service: MagicMock,
-    session_document_service: MagicMock,
-    summarization_service: MagicMock,
-    session_store: MagicMock,
-    telegram_application_service: MagicMock,
-    telegram_summary_application_service: MagicMock,
-    bot: MagicMock,
+    fake_openai: FakeOpenAIClient,
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    with (
-        patch("runtime.create_indexing_pipeline", return_value=indexing_pipeline) as mock_indexing,
-        patch(
-            "runtime.create_summarization_pipeline",
-            return_value=summarization_pipeline,
-        ) as mock_summarization,
-        patch("runtime.IndexingService", return_value=indexing_service) as mock_indexing_service,
-        patch(
-            "runtime.SessionDocumentService",
-            return_value=session_document_service,
-        ) as mock_session_document_service,
-        patch(
-            "runtime.SummarizationService",
-            return_value=summarization_service,
-        ) as mock_summarization_service,
-        patch("runtime.InMemorySessionStore", return_value=session_store) as mock_session_store,
-        patch(
-            "runtime.TelegramApplicationService",
-            return_value=telegram_application_service,
-        ) as mock_telegram_app,
-        patch(
-            "runtime.TelegramSummaryApplicationService",
-            return_value=telegram_summary_application_service,
-        ) as mock_telegram_summary,
-        patch("runtime.create_configured_telegram_bot", return_value=bot) as mock_create_bot,
-    ):
-        yield {
-            "settings": settings,
-            "document_store": document_store,
-            "indexing_pipeline": indexing_pipeline,
-            "summarization_pipeline": summarization_pipeline,
-            "indexing_service": indexing_service,
-            "session_document_service": session_document_service,
-            "summarization_service": summarization_service,
-            "session_store": session_store,
-            "telegram_application_service": telegram_application_service,
-            "telegram_summary_application_service": telegram_summary_application_service,
-            "bot": bot,
-            "mock_indexing": mock_indexing,
-            "mock_summarization": mock_summarization,
-            "mock_indexing_service": mock_indexing_service,
-            "mock_session_document_service": mock_session_document_service,
-            "mock_summarization_service": mock_summarization_service,
-            "mock_session_store": mock_session_store,
-            "mock_telegram_app": mock_telegram_app,
-            "mock_telegram_summary": mock_telegram_summary,
-            "mock_create_bot": mock_create_bot,
-        }
+    """The production runtime, assembled for real.
 
-
-def test_import_runtime_does_not_load_settings_or_preflight() -> None:
-    runtime_source = Path(__file__).resolve().parent.parent / "runtime.py"
-    runtime_tree = ast.parse(runtime_source.read_text(encoding="utf-8"))
-    forbidden_calls = {
-        "load_settings",
-        "validate_existing_pinecone_index",
-        "create_pinecone_document_store",
-        "create_indexing_pipeline",
-        "create_summarization_pipeline",
-        "create_configured_telegram_bot",
-        "assemble_runtime",
-        "build_runtime",
-        "run_polling",
-    }
-
-    for node in runtime_tree.body:
-        if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
-            continue
-        call = node.value
-        if isinstance(call.func, ast.Name) and call.func.id in forbidden_calls:
-            pytest.fail(f"runtime.py must not call {call.func.id} at import time")
-
-
-def test_import_runtime_does_not_create_global_dependencies() -> None:
-    import runtime
-
-    assert not hasattr(runtime, "bot")
-    assert not hasattr(runtime, "store")
-    assert not hasattr(runtime, "session_store")
-    assert not hasattr(runtime, "runtime")
-
-
-def test_assemble_runtime_wires_dependencies_once(assemble_patches: dict) -> None:
-    settings = assemble_patches["settings"]
-    document_store = assemble_patches["document_store"]
-
-    result = runtime.assemble_runtime(settings=settings, document_store=document_store)
-
-    assemble_patches["mock_indexing"].assert_called_once_with(settings, document_store)
-    assemble_patches["mock_summarization"].assert_called_once_with(settings)
-
-    assemble_patches["mock_indexing_service"].assert_called_once_with(
-        assemble_patches["indexing_pipeline"]
+    Only the three external boundaries are fake: the OpenAI client, the vector store
+    (Haystack's in-memory store) and the Telegram Bot API (``get_me`` and the two
+    send methods; any other API call would hit the offline guard).
+    """
+    store = InMemoryDocumentStore()
+    components = runtime.assemble_runtime(settings=settings, document_store=store)
+    bot = components.bot
+    bot.threaded = False  # run handlers inline, so the test sees their effects
+    monkeypatch.setattr(
+        bot, "get_me", lambda: User(id=999, is_bot=True, first_name="This", username="ThisBot")
     )
-    assemble_patches["mock_session_document_service"].assert_called_once_with(document_store)
-    assemble_patches["mock_summarization_service"].assert_called_once_with(
-        assemble_patches["session_document_service"],
-        assemble_patches["summarization_pipeline"],
-    )
-
-    assemble_patches["mock_session_store"].assert_called_once_with()
-    assemble_patches["mock_telegram_app"].assert_called_once_with(
-        session_store=assemble_patches["session_store"],
-        indexing_service=assemble_patches["indexing_service"],
-    )
-    assemble_patches["mock_telegram_summary"].assert_called_once_with(
-        session_store=assemble_patches["session_store"],
-        summarization_service=assemble_patches["summarization_service"],
-    )
-    assert (
-        assemble_patches["mock_telegram_app"].call_args.kwargs["session_store"]
-        is assemble_patches["mock_telegram_summary"].call_args.kwargs["session_store"]
-    )
-
-    assemble_patches["mock_create_bot"].assert_called_once_with(
-        settings,
-        assemble_patches["telegram_application_service"],
-        assemble_patches["telegram_summary_application_service"],
-    )
-
-    assert isinstance(result, runtime.RuntimeComponents)
-    assert result.document_store is document_store
-    assert result.session_store is assemble_patches["session_store"]
-    assert result.indexing_service is assemble_patches["indexing_service"]
-    assert result.session_document_service is assemble_patches["session_document_service"]
-    assert result.summarization_service is assemble_patches["summarization_service"]
-    assert result.telegram_application_service is assemble_patches["telegram_application_service"]
-    assert (
-        result.telegram_summary_application_service
-        is assemble_patches["telegram_summary_application_service"]
-    )
-    assert result.bot is assemble_patches["bot"]
-
-    assemble_patches["bot"].infinity_polling.assert_not_called()
-    assemble_patches["bot"].get_me.assert_not_called()
-    assemble_patches["bot"].send_message.assert_not_called()
+    bot.reply_to = MagicMock()  # type: ignore[method-assign]
+    bot.send_message = MagicMock()  # type: ignore[method-assign]
+    yield components, store
+    bot.worker_pool.close()
 
 
-def test_assemble_runtime_does_not_mutate_inputs(
-    assemble_patches: dict,
-    settings: Settings,
-    document_store: MagicMock,
+def test_assembled_runtime_records_a_discussion_and_summarizes_exactly_it(
+    assembled: tuple[runtime.RuntimeComponents, InMemoryDocumentStore],
+    fake_openai: FakeOpenAIClient,
 ) -> None:
-    original_settings = settings
-    original_store = document_store
+    components, store = assembled
+    bot = components.bot
 
-    runtime.assemble_runtime(settings=settings, document_store=document_store)
+    for message_id, text in enumerate(
+        ["/start_listening", "Let's ship on Tuesday", "Agreed, Tuesday works", "/summary"], start=1
+    ):
+        bot.process_new_messages([_group_message(text, message_id=message_id)])
 
-    assert settings is original_settings
-    assert document_store is original_store
+    # One session store is shared by recording and summarizing: both messages were
+    # counted, indexed through the real indexing pipeline, and the summary was built
+    # from exactly those two, oldest first.
+    assert components.session_store.get_active_session(CHAT_ID).message_count == 2
+    assert store.count_documents() == 2
+    assert len(fake_openai.embedding_inputs) == 2
+    prompt = fake_openai.prompt_text()
+    assert prompt.index("Let's ship on Tuesday") < prompt.index("Agreed, Tuesday works")
+    bot.send_message.assert_called_once_with(CHAT_ID, fake_openai.reply)
+
+
+def test_assembling_the_runtime_makes_no_telegram_api_call_and_does_not_poll(
+    assembled: tuple[runtime.RuntimeComponents, InMemoryDocumentStore],
+) -> None:
+    # assemble_runtime already ran under the offline guard with a real TeleBot: a
+    # getMe, setMyCommands or polling request would have raised. Nothing was sent.
+    components, store = assembled
+
+    components.bot.send_message.assert_not_called()
+    components.bot.reply_to.assert_not_called()
+    assert store.count_documents() == 0
 
 
 def test_build_runtime_order_and_wiring(settings: Settings) -> None:
@@ -273,10 +120,8 @@ def test_build_runtime_order_and_wiring(settings: Settings) -> None:
         assert existing_settings is settings
         return document_store
 
-    def _assemble(*, settings: Settings, document_store: MagicMock) -> MagicMock:
+    def _assemble(**_: object) -> MagicMock:
         events.append("assemble_runtime")
-        assert settings is settings
-        assert document_store is document_store
         return runtime_components
 
     with (
@@ -372,33 +217,28 @@ def test_run_polling_menu_failure_blocks_polling(bot: MagicMock) -> None:
     bot.stop_polling.assert_called_once_with()
 
 
-def test_run_polling_menu_failure_does_not_log_exception_text(
+@pytest.mark.parametrize("failing_call", ["command_menu", "polling"])
+def test_run_polling_failures_are_logged_without_the_exception_text(
     bot: MagicMock,
     caplog: pytest.LogCaptureFixture,
+    failing_call: str,
 ) -> None:
     caplog.set_level(logging.INFO)
     token = "123456789:AAH-s3cretTokenValue_0123456789abcdefghi"
-    error = ConnectionError(f"HTTPSConnectionPool: url: /bot{token}/setMyCommands")
+    error = ConnectionError(f"HTTPSConnectionPool: url: /bot{token}/{failing_call}")
+    if failing_call == "polling":
+        bot.infinity_polling.side_effect = error
+        menu = MagicMock()
+    else:
+        menu = MagicMock(side_effect=error)
 
-    with patch("runtime.configure_telegram_command_menu", side_effect=error):
+    with patch("runtime.configure_telegram_command_menu", menu):
         with pytest.raises(ConnectionError):
             runtime.run_polling(bot)
 
     assert "Telegram startup or polling failed: ConnectionError" in caplog.text
     assert token not in caplog.text
-    bot.infinity_polling.assert_not_called()
-    bot.stop_polling.assert_called_once_with()
-
-
-def test_run_polling_calls_infinity_polling_once_with_supported_kwargs(bot: MagicMock) -> None:
-    with patch("runtime.configure_telegram_command_menu"):
-        runtime.run_polling(bot)
-
-    bot.infinity_polling.assert_called_once_with(**runtime.POLLING_KWARGS)
-    bot.polling.assert_not_called()
-    bot.get_updates.assert_not_called()
-    bot.get_me.assert_not_called()
-    bot.send_message.assert_not_called()
+    assert bot.infinity_polling.called is (failing_call == "polling")
     bot.stop_polling.assert_called_once_with()
 
 
@@ -421,18 +261,6 @@ def test_run_polling_unexpected_error_is_not_swallowed(bot: MagicMock) -> None:
 
     bot.infinity_polling.assert_called_once_with(**runtime.POLLING_KWARGS)
     bot.stop_polling.assert_called_once_with()
-
-
-def test_run_polling_does_not_log_token(bot: MagicMock, caplog: pytest.LogCaptureFixture) -> None:
-    caplog.set_level(logging.INFO)
-    bot.infinity_polling.side_effect = RuntimeError("secret-telegram-token leaked")
-
-    with patch("runtime.configure_telegram_command_menu"):
-        with pytest.raises(RuntimeError):
-            runtime.run_polling(bot)
-
-    combined = caplog.text + str(bot.infinity_polling.call_args)
-    assert "secret-telegram-token" not in combined
 
 
 def test_build_runtime_logs_safe_fields_only(

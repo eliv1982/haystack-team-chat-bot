@@ -161,6 +161,9 @@ tests/
 Pipeline example.ipynb
 .env.example
 requirements.txt
+requirements-dev.txt
+pyproject.toml
+.github/workflows/ci.yml
 README.md
 bot.py
 runtime.py
@@ -269,13 +272,23 @@ Summary trigger не увеличивает `message_count` и не индекс
 
 ## Тестирование
 
+pytest и ruff вынесены из runtime-зависимостей в `requirements-dev.txt` (он включает `requirements.txt`):
+
+```powershell
+python -m pip install -r requirements-dev.txt
+```
+
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m pip check
 ```
 
-Текущий результат offline suite: **583 passed**.
+Работает и просто `pytest -q` (настройка в `pyproject.toml`).
+
+Текущий результат offline suite: **720 passed**.
+
+Suite полностью offline: `tests/conftest.py` запрещает соединения с любыми хостами, кроме loopback, и отключает Haystack telemetry (`HAYSTACK_TELEMETRY_ENABLED=False`). GitHub Actions (`.github/workflows/ci.yml`) запускает ruff, pytest и `pip check` на Python 3.10 и 3.12 без секретов и без обращений к OpenAI, Pinecone и Telegram.
 
 Покрытие включает:
 

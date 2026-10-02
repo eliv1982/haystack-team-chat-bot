@@ -142,18 +142,6 @@ def test_listening_session_rejects_invalid_message_count(message_count: object) 
         )
 
 
-def test_start_session_creates_session() -> None:
-    store = InMemorySessionStore(session_id_factory=lambda: "fixed-session")
-    session = store.start_session(
-        chat_id=-100,
-        started_at=_started_at(),
-        started_by_user_id=7,
-        started_by_name="Alice",
-    )
-    assert session.session_id == "fixed-session"
-    assert session.message_count == 0
-
-
 def test_start_session_uses_injected_factory() -> None:
     calls = {"count": 0}
 
@@ -169,6 +157,7 @@ def test_start_session_uses_injected_factory() -> None:
         started_by_name="Alice",
     )
     assert session.session_id == "deterministic-id"
+    assert session.message_count == 0
     assert calls["count"] == 1
 
 
@@ -246,20 +235,6 @@ def test_get_active_session_unknown_chat_returns_none() -> None:
     assert store.get_active_session(-999) is None
 
 
-def test_get_active_session_does_not_mutate_session() -> None:
-    store = InMemorySessionStore(session_id_factory=lambda: "session-1")
-    created = store.start_session(
-        chat_id=-100,
-        started_at=_started_at(),
-        started_by_user_id=7,
-        started_by_name="Alice",
-    )
-    first_get = store.get_active_session(-100)
-    second_get = store.get_active_session(-100)
-    assert first_get == second_get == created
-    assert first_get.message_count == 0
-
-
 def test_record_message_increments_from_zero_to_one() -> None:
     store = InMemorySessionStore(session_id_factory=lambda: "session-1")
     created = store.start_session(
@@ -285,19 +260,6 @@ def test_record_message_increments_sequentially() -> None:
     second = store.record_message(-100)
     assert first.message_count == 1
     assert second.message_count == 2
-
-
-def test_record_message_does_not_mutate_previous_snapshot() -> None:
-    store = InMemorySessionStore(session_id_factory=lambda: "session-1")
-    created = store.start_session(
-        chat_id=-100,
-        started_at=_started_at(),
-        started_by_user_id=7,
-        started_by_name="Alice",
-    )
-    updated = store.record_message(-100)
-    assert created.message_count == 0
-    assert updated.message_count == 1
 
 
 def test_record_message_without_active_session_raises() -> None:
@@ -352,19 +314,6 @@ def test_stop_session_removes_active_session() -> None:
     assert store.get_active_session(-100) is None
 
 
-def test_stop_session_twice_raises() -> None:
-    store = InMemorySessionStore(session_id_factory=lambda: "session-1")
-    store.start_session(
-        chat_id=-100,
-        started_at=_started_at(),
-        started_by_user_id=7,
-        started_by_name="Alice",
-    )
-    store.stop_session(-100)
-    with pytest.raises(NoActiveSessionError):
-        store.stop_session(-100)
-
-
 def test_stop_session_does_not_affect_other_chat() -> None:
     store = InMemorySessionStore(session_id_factory=lambda: "session-1")
     store.start_session(
@@ -385,33 +334,16 @@ def test_stop_session_does_not_affect_other_chat() -> None:
 
 
 @pytest.mark.parametrize(
-    ("method_name", "args"),
-    [
-        ("get_active_session", (-100,)),
-        ("record_message", (-100,)),
-        ("stop_session", (-100,)),
-    ],
+    "method_name",
+    ["get_active_session", "record_message", "stop_session", "get_latest_completed_session"],
 )
-def test_public_methods_reject_bool_chat_id(method_name: str, args: tuple[int]) -> None:
+@pytest.mark.parametrize("chat_id", [True, "-100"], ids=["bool", "string"])
+def test_public_methods_reject_a_chat_id_that_is_not_an_integer(
+    method_name: str, chat_id: object
+) -> None:
     store = InMemorySessionStore()
-    method = getattr(store, method_name)
     with pytest.raises(InvalidSessionStoreInputError, match="chat_id"):
-        method(True)  # type: ignore[arg-type]
-
-
-@pytest.mark.parametrize(
-    ("method_name", "args"),
-    [
-        ("get_active_session", ("-100",)),
-        ("record_message", ("-100",)),
-        ("stop_session", ("-100",)),
-    ],
-)
-def test_public_methods_reject_non_int_chat_id(method_name: str, args: tuple[str]) -> None:
-    store = InMemorySessionStore()
-    method = getattr(store, method_name)
-    with pytest.raises(InvalidSessionStoreInputError, match="chat_id"):
-        method("-100")  # type: ignore[arg-type]
+        getattr(store, method_name)(chat_id)
 
 
 def test_start_session_rejects_bool_chat_id() -> None:
@@ -504,28 +436,6 @@ def test_new_completed_replaces_previous_only_in_same_chat() -> None:
     assert latest is not first
 
 
-def test_start_new_active_does_not_remove_latest_completed() -> None:
-    store = InMemorySessionStore(session_id_factory=lambda: "session-1")
-    store.start_session(
-        chat_id=-100,
-        started_at=_started_at(),
-        started_by_user_id=7,
-        started_by_name="Alice",
-    )
-    completed = store.stop_session(-100)
-
-    store.start_session(
-        chat_id=-100,
-        started_at=_started_at(),
-        started_by_user_id=7,
-        started_by_name="Alice",
-    )
-
-    latest = store.get_latest_completed_session(-100)
-    assert latest is completed
-    assert store.get_active_session(-100) is not None
-
-
 def test_active_and_latest_completed_can_coexist() -> None:
     counter = {"value": 0}
 
@@ -590,25 +500,3 @@ def test_repeated_stop_does_not_change_latest_completed() -> None:
     with pytest.raises(NoActiveSessionError):
         store.stop_session(-100)
     assert store.get_latest_completed_session(-100) is completed
-
-
-def test_latest_completed_snapshot_is_immutable() -> None:
-    store = InMemorySessionStore(session_id_factory=lambda: "session-1")
-    store.start_session(
-        chat_id=-100,
-        started_at=_started_at(),
-        started_by_user_id=7,
-        started_by_name="Alice",
-    )
-    store.record_message(-100)
-    stopped = store.stop_session(-100)
-    latest = store.get_latest_completed_session(-100)
-    assert latest.message_count == 1
-    assert stopped.message_count == 1
-
-
-@pytest.mark.parametrize("method_name", ["get_latest_completed_session"])
-def test_get_latest_completed_rejects_bool_chat_id(method_name: str) -> None:
-    store = InMemorySessionStore()
-    with pytest.raises(InvalidSessionStoreInputError, match="chat_id"):
-        store.get_latest_completed_session(True)  # type: ignore[arg-type]

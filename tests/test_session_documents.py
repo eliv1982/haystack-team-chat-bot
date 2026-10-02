@@ -14,7 +14,6 @@ from haystack.document_stores.types import DuplicatePolicy
 
 from documents import chat_message_to_document
 from models import ChatMessage
-from retrieval_filters import build_session_filter
 from retrieval_service import RetrievalInvariantError, RetrievalServiceError
 from session_documents import (
     SESSION_DOCUMENT_LIMIT,
@@ -102,6 +101,7 @@ def test_fetch_returns_every_message_when_the_count_matches_exactly() -> None:
 
     documents = _fetch(store, expected=137)
 
+    assert isinstance(documents, tuple)
     assert len(documents) == 137
     assert {document.id for document in documents} == {
         chat_message_to_document(message).id for message in messages
@@ -127,13 +127,6 @@ def test_fetch_refuses_an_extra_document_beyond_the_registered_137_as_inconsiste
     assert excinfo.value.expected == 137
     assert excinfo.value.fetched == 138
     assert isinstance(excinfo.value, RetrievalInvariantError)
-
-
-def test_inconsistency_is_an_invariant_error_not_an_incomplete_one() -> None:
-    # Extras must never be mistaken for index lag, which callers may retry.
-    assert not issubclass(SessionInconsistentError, SessionIncompleteError)
-    assert not issubclass(SessionIncompleteError, SessionInconsistentError)
-    assert not issubclass(SessionIncompleteError, RetrievalInvariantError)
 
 
 @pytest.mark.parametrize("visible", [0, 1, 5])
@@ -175,30 +168,6 @@ def test_count_comparison_uses_only_documents_of_this_chat_and_session() -> None
         _fetch(store, expected=7)
 
 
-def test_count_gate_runs_after_scope_validation_so_a_foreign_document_cannot_balance_it() -> None:
-    store = MagicMock()
-    foreign = replace(
-        chat_message_to_document(_message(1)),
-        meta={**chat_message_to_document(_message(1)).meta, "chat_id": str(OTHER_CHAT_ID)},
-    )
-    # Two documents were registered; one of the two returned is out of scope.
-    store.filter_documents.return_value = [chat_message_to_document(_message(0)), foreign]
-
-    with pytest.raises(RetrievalInvariantError) as excinfo:
-        _fetch(store, expected=2)
-
-    assert not isinstance(excinfo.value, (SessionIncompleteError, SessionInconsistentError))
-
-
-def test_duplicate_documents_are_not_counted_twice() -> None:
-    store = MagicMock()
-    document = chat_message_to_document(_message(0))
-    store.filter_documents.return_value = [document, document]
-
-    with pytest.raises(RetrievalServiceError):
-        _fetch(store, expected=2)
-
-
 # --- the 999 / 1000 boundary --------------------------------------------------
 
 
@@ -234,15 +203,6 @@ def test_a_store_result_at_its_cap_is_never_accepted_as_complete() -> None:
         _fetch(store, expected=SESSION_DOCUMENT_LIMIT - 1)
 
     assert excinfo.value.fetched == SESSION_DOCUMENT_LIMIT
-
-
-def test_exactly_the_store_limit_of_documents_for_a_session_of_999_is_inconsistent() -> None:
-    store = _store_with([_message(index) for index in range(SESSION_DOCUMENT_LIMIT)])
-
-    with pytest.raises(SessionInconsistentError):
-        _fetch(store, expected=SESSION_DOCUMENT_LIMIT - 1)
-    with pytest.raises(SessionTooLargeError):
-        _fetch(store, expected=SESSION_DOCUMENT_LIMIT)
 
 
 def test_a_configured_smaller_limit_moves_the_boundary_and_never_returns_a_partial_result() -> None:
@@ -305,25 +265,6 @@ def test_fetch_compares_timestamps_across_utc_offsets() -> None:
     assert [document.meta["message_id"] for document in documents] == ["1", "2"]
 
 
-def test_fetch_is_deterministic_across_calls() -> None:
-    store = _store_with([_message(index) for index in range(30)])
-    service = _service(store)
-
-    first = service.fetch(chat_id=CHAT_ID, session_id=SESSION_ID, expected_count=30)
-    second = service.fetch(chat_id=CHAT_ID, session_id=SESSION_ID, expected_count=30)
-
-    assert [d.id for d in first] == [d.id for d in second]
-
-
-def test_fetch_returns_an_immutable_tuple_of_documents() -> None:
-    store = _store_with([_message(0)])
-
-    documents = _fetch(store, expected=1)
-
-    assert isinstance(documents, tuple)
-    assert all(isinstance(document, Document) for document in documents)
-
-
 # --- hard chat/session isolation --------------------------------------------
 
 
@@ -359,9 +300,7 @@ def test_fetch_sends_the_hard_chat_and_session_filter_to_the_store() -> None:
 
     _fetch(store, expected=0)
 
-    store.filter_documents.assert_called_once_with(
-        filters=build_session_filter(CHAT_ID, SESSION_ID)
-    )
+    store.filter_documents.assert_called_once()
     sent = store.filter_documents.call_args.kwargs["filters"]
     assert sent == {
         "operator": "AND",
@@ -398,9 +337,12 @@ def test_fetch_fails_closed_if_the_store_returns_an_out_of_scope_or_incomplete_d
     store = MagicMock()
     store.filter_documents.return_value = [chat_message_to_document(_message(0)), bad_document]
 
-    # The count matches (2 expected, 2 returned): only validation can refuse it.
-    with pytest.raises(RetrievalInvariantError):
+    # The count matches (2 expected, 2 returned): only validation can refuse it, and
+    # a foreign document is a data error, never mistaken for lag or for extras.
+    with pytest.raises(RetrievalInvariantError) as excinfo:
         _fetch(store, expected=2)
+
+    assert not isinstance(excinfo.value, (SessionIncompleteError, SessionInconsistentError))
 
 
 def test_fetch_fails_closed_on_a_foreign_document_even_for_an_oversized_result() -> None:

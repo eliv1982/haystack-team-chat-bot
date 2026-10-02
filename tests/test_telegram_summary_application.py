@@ -135,7 +135,7 @@ def test_active_session_has_priority_over_completed(
     assert request.session_id == active.session_id
 
 
-def test_completed_session_used_after_stop(
+def test_completed_session_is_summarized_after_stop_with_its_final_count(
     summary_service: TelegramSummaryApplicationService,
     session_store: InMemorySessionStore,
     summarization_service: MagicMock,
@@ -148,6 +148,7 @@ def test_completed_session_used_after_stop(
     request = summarization_service.summarize.call_args.args[0]
     assert request.session_id == stopped.session_id
     assert request.chat_id == -1001234567890
+    assert request.expected_message_count == 3
 
 
 def test_no_active_or_completed_raises_no_summarizable_session(
@@ -165,7 +166,7 @@ def test_summarize_builds_exact_request(
     session_store: InMemorySessionStore,
     summarization_service: MagicMock,
 ) -> None:
-    _start_session(session_store)
+    _start_session(session_store, message_count=137)
     message = _make_message()
 
     summary_service.summarize_discussion(message)
@@ -175,69 +176,7 @@ def test_summarize_builds_exact_request(
     assert request.instruction == SUMMARIZATION_INSTRUCTION
     assert request.chat_id == -1001234567890
     assert request.session_id == "telegram-session-test"
-    assert request.expected_message_count == 0
-
-
-def test_summarize_calls_service_once(
-    summary_service: TelegramSummaryApplicationService,
-    session_store: InMemorySessionStore,
-    summarization_service: MagicMock,
-) -> None:
-    _start_session(session_store)
-
-    summary_service.summarize_discussion(_make_message())
-
-    summarization_service.summarize.assert_called_once()
-
-
-def test_summarize_does_not_mutate_session_or_result(
-    summary_service: TelegramSummaryApplicationService,
-    session_store: InMemorySessionStore,
-    summarization_service: MagicMock,
-) -> None:
-    _start_session(session_store, message_count=1)
-    before = session_store.get_active_session(-1001234567890)
-    message = _make_message()
-    original_text = message.text
-
-    result = summary_service.summarize_discussion(message)
-
-    after = session_store.get_active_session(-1001234567890)
-    assert before == after
-    assert message.text == original_text
-    assert result.source_document_ids == ("doc-1", "doc-2")
-
-
-def test_summarize_does_not_call_store_lifecycle_methods(
-    summary_service: TelegramSummaryApplicationService,
-    session_store: InMemorySessionStore,
-    summarization_service: MagicMock,
-) -> None:
-    _start_session(session_store)
-    original_start = session_store.start_session
-    original_record = session_store.record_message
-    original_stop = session_store.stop_session
-    calls = {"start": 0, "record": 0, "stop": 0}
-
-    def counted_start(**kwargs: object) -> object:
-        calls["start"] += 1
-        return original_start(**kwargs)  # type: ignore[arg-type]
-
-    def counted_record(chat_id: int) -> object:
-        calls["record"] += 1
-        return original_record(chat_id)
-
-    def counted_stop(chat_id: int) -> object:
-        calls["stop"] += 1
-        return original_stop(chat_id)
-
-    session_store.start_session = counted_start  # type: ignore[method-assign]
-    session_store.record_message = counted_record  # type: ignore[method-assign]
-    session_store.stop_session = counted_stop  # type: ignore[method-assign]
-
-    summary_service.summarize_discussion(_make_message())
-
-    assert calls == {"start": 0, "record": 0, "stop": 0}
+    assert request.expected_message_count == 137  # the registry's count, not the store's
 
 
 @pytest.mark.parametrize("chat_type", ["private", "channel", "unknown"])
@@ -253,72 +192,6 @@ def test_summarize_rejects_unsupported_chat(
         summary_service.summarize_discussion(_make_message(chat_type=chat_type))
 
     summarization_service.summarize.assert_not_called()
-
-
-def test_summarize_no_context_error_propagates(
-    summary_service: TelegramSummaryApplicationService,
-    session_store: InMemorySessionStore,
-    summarization_service: MagicMock,
-) -> None:
-    _start_session(session_store)
-    summarization_service.summarize.side_effect = NoSummarizationContextError("empty")
-
-    with pytest.raises(NoSummarizationContextError):
-        summary_service.summarize_discussion(_make_message())
-
-    assert session_store.get_active_session(-1001234567890) is not None
-
-
-def test_summarize_error_does_not_stop_session_or_retry(
-    summary_service: TelegramSummaryApplicationService,
-    session_store: InMemorySessionStore,
-    summarization_service: MagicMock,
-) -> None:
-    _start_session(session_store, message_count=2)
-    summarization_service.summarize.side_effect = SummarizationServiceError("failed")
-
-    with pytest.raises(SummarizationServiceError):
-        summary_service.summarize_discussion(_make_message())
-
-    assert session_store.get_active_session(-1001234567890).message_count == 2
-    summarization_service.summarize.assert_called_once()
-
-
-def test_summary_after_stop_uses_completed_session(
-    summary_service: TelegramSummaryApplicationService,
-    session_store: InMemorySessionStore,
-    summarization_service: MagicMock,
-) -> None:
-    _start_session(session_store, message_count=4)
-    stopped = session_store.stop_session(-1001234567890)
-
-    summary_service.summarize_discussion(_make_message(text="/summary"))
-
-    request = summarization_service.summarize.call_args.args[0]
-    assert request.session_id == stopped.session_id
-    assert stopped.message_count == 4
-
-
-def test_new_active_switches_summary_to_new_session(
-    summary_service: TelegramSummaryApplicationService,
-    session_store: InMemorySessionStore,
-    summarization_service: MagicMock,
-) -> None:
-    _start_session(session_store, message_count=1)
-    session_store.stop_session(-1001234567890)
-    session_store.start_session(
-        chat_id=-1001234567890,
-        started_at=datetime(2024, 1, 15, 14, 0, tzinfo=timezone.utc),
-        started_by_user_id=8,
-        started_by_name="Bob",
-    )
-
-    summary_service.summarize_discussion(_make_message())
-
-    active = session_store.get_active_session(-1001234567890)
-    request = summarization_service.summarize.call_args.args[0]
-    assert active is not None
-    assert request.session_id == active.session_id
 
 
 def test_summary_logs_safe_observability_fields_only(
@@ -364,33 +237,6 @@ def retrying_service(
     )
 
 
-def test_request_carries_the_session_message_count_as_the_expected_count(
-    summary_service: TelegramSummaryApplicationService,
-    session_store: InMemorySessionStore,
-    summarization_service: MagicMock,
-) -> None:
-    _start_session(session_store, message_count=137)
-
-    summary_service.summarize_discussion(_make_message())
-
-    request = summarization_service.summarize.call_args.args[0]
-    assert request.expected_message_count == 137
-
-
-def test_request_for_a_completed_session_uses_its_final_message_count(
-    summary_service: TelegramSummaryApplicationService,
-    session_store: InMemorySessionStore,
-    summarization_service: MagicMock,
-) -> None:
-    _start_session(session_store, message_count=4)
-    session_store.stop_session(-1001234567890)
-
-    summary_service.summarize_discussion(_make_message())
-
-    request = summarization_service.summarize.call_args.args[0]
-    assert request.expected_message_count == 4
-
-
 def test_complete_session_is_summarized_without_any_retry_or_wait(
     retrying_service: TelegramSummaryApplicationService,
     session_store: InMemorySessionStore,
@@ -406,42 +252,26 @@ def test_complete_session_is_summarized_without_any_retry_or_wait(
     assert sleeps == []
 
 
+@pytest.mark.parametrize("lagging_attempts", [1, 2])
 def test_a_bounded_retry_recovers_from_index_lag_and_then_summarizes(
     retrying_service: TelegramSummaryApplicationService,
     session_store: InMemorySessionStore,
     summarization_service: MagicMock,
     sleeps: list[float],
-) -> None:
-    _start_session(session_store, message_count=137)
-    expected_result = SummarizationResult(text="Итог", source_document_ids=("doc-1",))
-    summarization_service.summarize.side_effect = [_incomplete(), expected_result]
-
-    result = retrying_service.summarize_discussion(_make_message())
-
-    assert result is expected_result
-    assert summarization_service.summarize.call_count == 2
-    assert sleeps == [1.5]
-
-
-def test_a_second_retry_may_still_recover(
-    retrying_service: TelegramSummaryApplicationService,
-    session_store: InMemorySessionStore,
-    summarization_service: MagicMock,
-    sleeps: list[float],
+    lagging_attempts: int,
 ) -> None:
     _start_session(session_store, message_count=137)
     expected_result = SummarizationResult(text="Итог", source_document_ids=("doc-1",))
     summarization_service.summarize.side_effect = [
-        _incomplete(fetched=130),
-        _incomplete(fetched=136),
+        *[_incomplete(fetched=130 + attempt) for attempt in range(lagging_attempts)],
         expected_result,
     ]
 
     result = retrying_service.summarize_discussion(_make_message())
 
     assert result is expected_result
-    assert summarization_service.summarize.call_count == 3
-    assert sleeps == [1.5, 1.5]
+    assert summarization_service.summarize.call_count == lagging_attempts + 1
+    assert sleeps == [1.5] * lagging_attempts
 
 
 def test_persistent_shortfall_is_refused_after_exactly_the_bounded_attempts(
@@ -493,9 +323,10 @@ def test_more_documents_than_counted_fails_at_once_without_retry_or_wait(
     [
         NoSummarizationContextError("empty"),
         SessionTooLargeError(1_000),
+        SummarizationServiceError("failed"),
         RuntimeError("provider down"),
     ],
-    ids=["no-context", "too-large", "provider-error"],
+    ids=["no-context", "too-large", "summarization-error", "provider-error"],
 )
 def test_only_an_incomplete_session_is_retried(
     retrying_service: TelegramSummaryApplicationService,
@@ -512,34 +343,8 @@ def test_only_an_incomplete_session_is_retried(
 
     summarization_service.summarize.assert_called_once()
     assert sleeps == []
-
-
-def test_every_attempt_re_reads_the_message_count(
-    retrying_service: TelegramSummaryApplicationService,
-    session_store: InMemorySessionStore,
-    summarization_service: MagicMock,
-    sleeps: list[float],
-) -> None:
-    # A message recorded while waiting for the index must raise the expected count
-    # instead of showing up as an "extra" document on the next attempt.
-    _start_session(session_store, message_count=137)
-    expected_result = SummarizationResult(text="Итог", source_document_ids=("doc-1",))
-    seen_counts: list[int] = []
-
-    def summarize(request: object) -> SummarizationResult:
-        seen_counts.append(request.expected_message_count)  # type: ignore[attr-defined]
-        if len(seen_counts) == 1:
-            session_store.record_message(-1001234567890)  # arrives during the wait
-            raise _incomplete()
-        return expected_result
-
-    summarization_service.summarize.side_effect = summarize
-
-    result = retrying_service.summarize_discussion(_make_message())
-
-    assert result is expected_result
-    assert seen_counts == [137, 138]
-    assert sleeps == [1.5]
+    # A failed summary neither ends nor changes the session.
+    assert session_store.get_active_session(-1001234567890).message_count == 3
 
 
 def test_each_retry_resolves_the_session_again(

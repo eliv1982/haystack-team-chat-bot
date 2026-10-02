@@ -3,5 +3,3 @@ pinecone-haystack==6.2.0
 pinecone==9.1.0
 pyTelegramBotAPI==4.34.0
 python-dotenv==1.1.0
-pytest==8.4.1
-ruff==0.12.4

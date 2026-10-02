@@ -17,23 +17,6 @@ from pinecone_preflight import (
 )
 
 
-@pytest.fixture
-def settings() -> Settings:
-    return Settings(
-        telegram_bot_token="test-telegram-token",
-        openai_api_key="test-openai-key",
-        api_base_url="https://api.example.com/v1",
-        openai_model="test-chat-model",
-        embedding_model="test-embedding-model",
-        pinecone_api_key="test-pinecone-key",
-        pinecone_index_name="test-index",
-        pinecone_namespace="haystack-team-chat-homework",
-        pinecone_dimension=1536,
-        pinecone_metric="cosine",
-        retrieval_top_k=50,
-    )
-
-
 def _mock_index_model(
     *,
     dimension: int = 1536,
@@ -154,15 +137,6 @@ def test_sdk_exception_is_chained(
         validate_existing_pinecone_index(settings)
 
     assert isinstance(exc_info.value.__cause__, RuntimeError)
-
-
-def test_preflight_does_not_call_pinecone_on_import() -> None:
-    with patch("pinecone_preflight.Pinecone") as mock_pinecone_cls:
-        import pinecone_preflight
-
-        assert callable(pinecone_preflight.validate_existing_pinecone_index)
-
-    mock_pinecone_cls.assert_not_called()
 
 
 @patch("pinecone_preflight.Pinecone")

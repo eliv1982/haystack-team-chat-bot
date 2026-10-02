@@ -138,16 +138,6 @@ def test_retrieve_calls_pipeline_once_with_expected_inputs(service: RetrievalSer
     assert run_kwargs["include_outputs_from"] == {"retriever"}
 
 
-def test_retrieve_does_not_mutate_request(service: RetrievalService, pipeline: MagicMock) -> None:
-    request = _request()
-    original = (request.query, request.chat_id, request.session_id)
-    pipeline.run.return_value = _pipeline_result([])
-
-    service.retrieve(request)
-
-    assert (request.query, request.chat_id, request.session_id) == original
-
-
 def test_retrieve_returns_single_document(service: RetrievalService, pipeline: MagicMock) -> None:
     document = _document()
     pipeline.run.return_value = _pipeline_result([document])
@@ -171,15 +161,6 @@ def test_retrieve_allows_empty_result(service: RetrievalService, pipeline: Magic
     pipeline.run.return_value = _pipeline_result([])
 
     assert service.retrieve(_request()) == ()
-
-
-def test_retrieve_returns_immutable_tuple(service: RetrievalService, pipeline: MagicMock) -> None:
-    document = _document()
-    pipeline.run.return_value = _pipeline_result([document])
-
-    result = service.retrieve(_request())
-
-    assert isinstance(result, tuple)
 
 
 @pytest.mark.parametrize("score", [1, 0.75])
@@ -270,21 +251,3 @@ def test_retrieve_does_not_swallow_pipeline_errors(service: RetrievalService, pi
         service.retrieve(_request())
 
     assert pipeline.run.call_count == 1
-
-
-def test_retrieve_does_not_retry_after_pipeline_error(service: RetrievalService, pipeline: MagicMock) -> None:
-    pipeline.run.side_effect = RuntimeError("pipeline failed")
-
-    with pytest.raises(RuntimeError):
-        service.retrieve(_request())
-
-    pipeline.run.assert_called_once()
-
-
-def test_retrieve_has_no_document_store_fallback(service: RetrievalService, pipeline: MagicMock) -> None:
-    pipeline.run.side_effect = RuntimeError("pipeline failed")
-
-    with pytest.raises(RuntimeError):
-        service.retrieve(_request())
-
-    assert not hasattr(service, "_document_store")

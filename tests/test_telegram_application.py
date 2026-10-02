@@ -138,33 +138,6 @@ def test_start_listening_success(
     indexing_service.index_messages.assert_not_called()
 
 
-def test_start_listening_calls_store_once(
-    application_service: TelegramApplicationService,
-    session_store: InMemorySessionStore,
-) -> None:
-    message = _make_message()
-    original_start = session_store.start_session
-    call_count = {"value": 0}
-
-    def counted_start(**kwargs: object) -> object:
-        call_count["value"] += 1
-        return original_start(**kwargs)  # type: ignore[arg-type]
-
-    session_store.start_session = counted_start  # type: ignore[method-assign]
-    application_service.start_listening(message)
-    assert call_count["value"] == 1
-
-
-def test_start_listening_uses_full_name_not_username(
-    application_service: TelegramApplicationService,
-) -> None:
-    message = _make_message(first_name="Alice", last_name="Smith", username="alice")
-
-    session = application_service.start_listening(message)
-
-    assert session.started_by_name == "Alice Smith"
-
-
 @pytest.mark.parametrize("chat_type", ["private", "channel", "unknown"])
 def test_start_listening_rejects_unsupported_chat(
     application_service: TelegramApplicationService,
@@ -216,17 +189,6 @@ def test_record_indexes_one_message_and_increments_count(
     assert len(indexed_batch) == 1
     assert indexed_batch[0].session_id == "telegram-session-test"
     assert indexed_batch[0].text == "Discussion point"
-
-
-def test_record_passes_exact_active_session_id(
-    application_service: TelegramApplicationService,
-    indexing_service: MagicMock,
-) -> None:
-    application_service.start_listening(_make_message(text="/start_listening"))
-    application_service.record_text_message(_make_message(text="One", message_id=43))
-
-    indexed_message = indexing_service.index_messages.call_args.args[0][0]
-    assert indexed_message.session_id == "telegram-session-test"
 
 
 @pytest.mark.parametrize("text", ["/stop_listening", "  /start_listening"])
@@ -288,28 +250,16 @@ def test_record_adapter_failure_does_not_index_or_increment(
     assert session_store.get_active_session(-1001234567890).message_count == 0
 
 
-def test_record_ignores_bot_user_messages_without_error(
-    application_service: TelegramApplicationService,
-    session_store: InMemorySessionStore,
-    indexing_service: MagicMock,
-) -> None:
-    application_service.start_listening(_make_message(text="/start_listening"))
-
-    result = application_service.record_text_message(
-        _make_message(text="From bot", message_id=43, is_bot=True)
-    )
-
-    assert result is None
-    indexing_service.index_messages.assert_not_called()
-    assert session_store.get_active_session(-1001234567890).message_count == 0
+def _bot_user_message() -> Message:
+    return _make_message(text="From bot", message_id=43, is_bot=True)
 
 
 @pytest.mark.parametrize(
     "message_factory",
-    [_anonymous_admin_message, _linked_channel_message],
-    ids=["anonymous-admin", "linked-channel"],
+    [_anonymous_admin_message, _linked_channel_message, _bot_user_message],
+    ids=["anonymous-admin", "linked-channel", "bot-user"],
 )
-def test_record_ignores_messages_sent_on_behalf_of_a_chat(
+def test_record_ignores_messages_that_have_no_group_participant_behind_them(
     application_service: TelegramApplicationService,
     session_store: InMemorySessionStore,
     indexing_service: MagicMock,
@@ -324,21 +274,6 @@ def test_record_ignores_messages_sent_on_behalf_of_a_chat(
     assert session_store.get_active_session(-1001234567890).message_count == 0
 
 
-def test_anonymous_admin_message_does_not_disturb_recording_of_real_participants(
-    application_service: TelegramApplicationService,
-    session_store: InMemorySessionStore,
-    indexing_service: MagicMock,
-) -> None:
-    application_service.start_listening(_make_message(text="/start_listening"))
-
-    application_service.record_text_message(_make_message(message_id=50, text="Before"))
-    application_service.record_text_message(_anonymous_admin_message())
-    application_service.record_text_message(_make_message(message_id=51, text="After"))
-
-    assert indexing_service.index_messages.call_count == 2
-    assert session_store.get_active_session(-1001234567890).message_count == 2
-
-
 def test_anonymous_admin_can_still_start_a_session(
     application_service: TelegramApplicationService,
     session_store: InMemorySessionStore,
@@ -350,14 +285,6 @@ def test_anonymous_admin_can_still_start_a_session(
 
     assert session.started_by_name == "Group"
     assert session_store.get_active_session(-1001234567890) == session
-
-
-def test_ignored_sender_does_not_use_the_indexing_service_when_not_listening(
-    application_service: TelegramApplicationService,
-    indexing_service: MagicMock,
-) -> None:
-    assert application_service.record_text_message(_anonymous_admin_message()) is None
-    indexing_service.index_messages.assert_not_called()
 
 
 def test_record_uses_independent_sessions_per_chat(

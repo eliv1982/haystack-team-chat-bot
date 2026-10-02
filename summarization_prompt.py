@@ -60,8 +60,3 @@ SUMMARIZATION_PROMPT_TEMPLATE: tuple[ChatMessage, ...] = (
     ChatMessage.from_system(_SYSTEM_PROMPT),
     ChatMessage.from_user(_USER_PROMPT),
 )
-
-
-def get_summarization_prompt_template() -> list[ChatMessage]:
-    """Return a new list copy of the summarization prompt template."""
-    return list(SUMMARIZATION_PROMPT_TEMPLATE)

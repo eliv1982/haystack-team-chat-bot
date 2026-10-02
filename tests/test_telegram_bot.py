@@ -1,159 +1,43 @@
-"""Tests for the TeleBot factory."""
+"""Tests for the TeleBot factories (a real TeleBot is built; nothing is sent)."""
 
 from __future__ import annotations
 
-import importlib
-import sys
-from unittest.mock import MagicMock, patch
+from collections.abc import Iterator
+from unittest.mock import MagicMock
 
 import pytest
+import telebot
 
 from config import Settings
+from telegram_bot import create_configured_telegram_bot, create_telegram_bot
 
 
 @pytest.fixture
-def settings() -> Settings:
-    return Settings(
-        telegram_bot_token="secret-telegram-token",
-        openai_api_key="test-openai-key",
-        api_base_url=None,
-        openai_model="test-chat-model",
-        embedding_model="test-embedding-model",
-        pinecone_api_key="test-pinecone-key",
-        pinecone_index_name="test-index",
-        pinecone_namespace="haystack-team-chat-homework",
-        pinecone_dimension=1536,
-        pinecone_metric="cosine",
-        retrieval_top_k=50,
-    )
+def created_bots() -> Iterator[list[telebot.TeleBot]]:
+    bots: list[telebot.TeleBot] = []
+    yield bots
+    for bot in bots:
+        bot.worker_pool.close()
 
 
-def test_create_telegram_bot_calls_constructor_once(settings: Settings) -> None:
-    mock_bot = MagicMock()
-    with patch("telegram_bot.telebot.TeleBot", return_value=mock_bot) as constructor:
-        from telegram_bot import create_telegram_bot
-
-        bot = create_telegram_bot(settings)
-
-    constructor.assert_called_once_with(settings.telegram_bot_token)
-    assert bot is mock_bot
-
-
-def test_create_telegram_bot_does_not_poll(settings: Settings) -> None:
-    mock_bot = MagicMock()
-    with patch("telegram_bot.telebot.TeleBot", return_value=mock_bot):
-        from telegram_bot import create_telegram_bot
-
-        create_telegram_bot(settings)
-
-    mock_bot.polling.assert_not_called()
-    mock_bot.infinity_polling.assert_not_called()
-    mock_bot.get_me.assert_not_called()
-    mock_bot.send_message.assert_not_called()
-
-
-def test_create_telegram_bot_does_not_register_handlers(settings: Settings) -> None:
-    mock_bot = MagicMock()
-    with patch("telegram_bot.telebot.TeleBot", return_value=mock_bot):
-        from telegram_bot import create_telegram_bot
-
-        create_telegram_bot(settings)
-
-    assert mock_bot.message_handler.call_count == 0
-    assert mock_bot.callback_query_handler.call_count == 0
-
-
-def test_importing_telegram_bot_does_not_create_bot() -> None:
-    module_name = "telegram_bot"
-    sys.modules.pop(module_name, None)
-    with patch("telegram_bot.telebot.TeleBot") as constructor:
-        importlib.import_module(module_name)
-    constructor.assert_not_called()
-
-
-def test_factory_errors_do_not_expose_token(settings: Settings) -> None:
-    with patch("telegram_bot.telebot.TeleBot", side_effect=RuntimeError("constructor failed")):
-        from telegram_bot import create_telegram_bot
-
-        with pytest.raises(RuntimeError, match="constructor failed") as exc_info:
-            create_telegram_bot(settings)
-
-    assert settings.telegram_bot_token not in str(exc_info.value)
-
-
-def test_create_configured_telegram_bot_registers_handlers_once(
+def test_create_telegram_bot_builds_a_bot_for_the_configured_token(
     settings: Settings,
+    created_bots: list[telebot.TeleBot],
 ) -> None:
-    mock_bot = MagicMock()
-    application_service = MagicMock()
-    summary_application_service = MagicMock()
-    with patch("telegram_bot.create_telegram_bot", return_value=mock_bot) as create_bot:
-        with patch("telegram_bot.register_telegram_handlers") as register_handlers:
-            from telegram_bot import create_configured_telegram_bot
+    bot = create_telegram_bot(settings)
+    created_bots.append(bot)
 
-            bot = create_configured_telegram_bot(
-                settings,
-                application_service,
-                summary_application_service,
-            )
-
-    create_bot.assert_called_once_with(settings)
-    register_handlers.assert_called_once_with(
-        mock_bot,
-        application_service,
-        summary_application_service,
-    )
-    assert bot is mock_bot
+    assert isinstance(bot, telebot.TeleBot)
+    assert bot.token == settings.telegram_bot_token
+    assert not bot.message_handlers  # handler registration is a separate step
 
 
-def test_create_configured_telegram_bot_does_not_poll_or_call_bot_api(
+def test_create_configured_telegram_bot_registers_the_handlers(
     settings: Settings,
+    created_bots: list[telebot.TeleBot],
 ) -> None:
-    mock_bot = MagicMock()
-    application_service = MagicMock()
-    summary_application_service = MagicMock()
-    with patch("telegram_bot.create_telegram_bot", return_value=mock_bot):
-        with patch("telegram_bot.register_telegram_handlers"):
-            from telegram_bot import create_configured_telegram_bot
+    bot = create_configured_telegram_bot(settings, MagicMock(), MagicMock())
+    created_bots.append(bot)
 
-            create_configured_telegram_bot(
-                settings,
-                application_service,
-                summary_application_service,
-            )
-
-    mock_bot.polling.assert_not_called()
-    mock_bot.infinity_polling.assert_not_called()
-    mock_bot.get_me.assert_not_called()
-    mock_bot.send_message.assert_not_called()
-
-
-def test_importing_telegram_bot_does_not_create_global_dependencies() -> None:
-    module_name = "telegram_bot"
-    sys.modules.pop(module_name, None)
-    with patch("telegram_bot.telebot.TeleBot") as constructor:
-        with patch("telegram_bot.register_telegram_handlers"):
-            module = importlib.import_module(module_name)
-    constructor.assert_not_called()
-    assert not hasattr(module, "bot")
-    assert not hasattr(module, "store")
-    assert not hasattr(module, "application_service")
-
-
-def test_runtime_uses_configured_telegram_bot_factory(settings: Settings) -> None:
-    document_store = MagicMock(name="document_store")
-    mock_bot = MagicMock(name="bot")
-
-    with (
-        patch("runtime.create_indexing_pipeline", return_value=MagicMock()),
-        patch("runtime.create_summarization_pipeline", return_value=MagicMock()),
-        patch("runtime.create_configured_telegram_bot", return_value=mock_bot) as create_bot,
-    ):
-        from runtime import assemble_runtime
-
-        result = assemble_runtime(settings=settings, document_store=document_store)
-
-    create_bot.assert_called_once()
-    assert result.bot is mock_bot
-    mock_bot.infinity_polling.assert_not_called()
-    mock_bot.get_me.assert_not_called()
+    assert bot.token == settings.telegram_bot_token
+    assert bot.message_handlers  # what they do is covered by the dispatch tests

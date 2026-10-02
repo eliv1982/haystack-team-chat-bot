@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from types import SimpleNamespace
-from unittest.mock import MagicMock
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from telebot.types import Chat, Message, User
@@ -14,9 +12,7 @@ from telegram_adapter import (
     TelegramAdapterError,
     command_target_username,
     is_command_addressed_to,
-    is_summary_command_text,
     is_summary_phrase_text,
-    is_summary_request_text,
     telegram_text_message_to_chat_message,
     unsupported_sender_reason,
 )
@@ -64,12 +60,6 @@ def test_group_message_converts_to_chat_message() -> None:
     assert result.text == "Hello, team!"
 
 
-def test_negative_chat_id_is_allowed() -> None:
-    message = _make_message(chat_id=-100)
-    result = telegram_text_message_to_chat_message(message, session_id="session-1")
-    assert result.chat_id == -100
-
-
 def test_author_name_from_first_and_last_name() -> None:
     message = _make_message(first_name="Alice", last_name="Smith", username="alice")
     result = telegram_text_message_to_chat_message(message, session_id="session-1")
@@ -110,17 +100,11 @@ def test_unix_timestamp_converts_to_utc_datetime() -> None:
 
 
 def test_aware_datetime_converts_to_utc() -> None:
-    aware = datetime(2024, 1, 15, 15, 30, tzinfo=timezone.utc)
-    message = _make_message(date=aware)
+    plus_three = datetime(2024, 1, 15, 18, 30, tzinfo=timezone(timedelta(hours=3)))
+    message = _make_message(date=plus_three)
     result = telegram_text_message_to_chat_message(message, session_id="session-1")
-    assert result.sent_at == aware
-
-
-def test_same_telegram_message_produces_same_domain_fields() -> None:
-    message = _make_message()
-    first = telegram_text_message_to_chat_message(message, session_id="session-1")
-    second = telegram_text_message_to_chat_message(message, session_id="session-1")
-    assert first == second
+    assert result.sent_at == datetime(2024, 1, 15, 15, 30, tzinfo=timezone.utc)
+    assert result.sent_at.utcoffset() == timedelta(0)
 
 
 def test_message_none_is_rejected() -> None:
@@ -209,35 +193,6 @@ def test_unsupported_date_type_is_rejected() -> None:
         telegram_text_message_to_chat_message(message, session_id="session-1")
 
 
-def test_adapter_does_not_mutate_input_message() -> None:
-    message = _make_message(username="  @alice  ", text="  Hello  ")
-    original_text = message.text
-    original_username = message.from_user.username
-    telegram_text_message_to_chat_message(message, session_id="  session-1  ")
-    assert message.text == original_text
-    assert message.from_user.username == original_username
-
-
-def test_adapter_does_not_call_api_methods() -> None:
-    message = MagicMock()
-    message.chat = SimpleNamespace(id=-100)
-    message.message_id = 1
-    message.from_user = SimpleNamespace(
-        id=7,
-        is_bot=False,
-        first_name="Alice",
-        last_name=None,
-        username="alice",
-    )
-    message.text = "Hello"
-    message.date = 1705320600
-
-    telegram_text_message_to_chat_message(message, session_id="session-1")
-
-    for method_name in ("get_me", "send_message", "get_updates"):
-        assert not getattr(message, method_name, MagicMock()).called
-
-
 @pytest.mark.parametrize(
     "text",
     [
@@ -250,7 +205,6 @@ def test_adapter_does_not_call_api_methods() -> None:
 )
 def test_is_summary_phrase_text_accepts_normalized_phrases(text: str) -> None:
     assert is_summary_phrase_text(text) is True
-    assert is_summary_request_text(text) is True
 
 
 @pytest.mark.parametrize(
@@ -272,39 +226,6 @@ def test_is_summary_phrase_text_accepts_normalized_phrases(text: str) -> None:
 )
 def test_is_summary_phrase_text_rejects_non_exact_phrases(text: object) -> None:
     assert is_summary_phrase_text(text) is False
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "/summary",
-        "/summary@team_bot",
-        "  /summary@team_bot  ",
-    ],
-)
-def test_is_summary_command_text_accepts_summary_command(text: str) -> None:
-    assert is_summary_command_text(text) is True
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "/summary extra",
-        "/summary@bot extra",
-        "Подведи итог",
-        "/start_listening",
-        None,
-    ],
-)
-def test_is_summary_command_text_rejects_non_command_forms(text: object) -> None:
-    assert is_summary_command_text(text) is False
-
-
-def test_is_summary_request_text_does_not_mutate_input() -> None:
-    original = "  Что   думаешь?  "
-    text = original
-    is_summary_request_text(text)
-    assert text == original
 
 
 # --- commands addressed to a specific bot ------------------------------------

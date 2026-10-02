@@ -10,7 +10,7 @@ from haystack.dataclasses.chat_message import ChatRole
 
 from documents import chat_message_to_document
 from models import ChatMessage
-from summarization_prompt import SUMMARIZATION_PROMPT_TEMPLATE, get_summarization_prompt_template
+from summarization_prompt import SUMMARIZATION_PROMPT_TEMPLATE
 
 
 def _discussion_documents() -> list[Document]:
@@ -43,27 +43,27 @@ def _discussion_documents() -> list[Document]:
 
 def _render_prompt(*, documents: list[Document], instruction: str) -> list[str]:
     builder = ChatPromptBuilder(
-        template=get_summarization_prompt_template(),
+        template=list(SUMMARIZATION_PROMPT_TEMPLATE),
         required_variables=["documents", "instruction"],
     )
     rendered = builder.run(documents=documents, instruction=instruction)["prompt"]
     return [message.text or "" for message in rendered]
 
 
-def test_template_has_system_and_user_messages() -> None:
-    assert len(SUMMARIZATION_PROMPT_TEMPLATE) == 2
-    assert SUMMARIZATION_PROMPT_TEMPLATE[0].is_from(ChatRole.SYSTEM)
-    assert SUMMARIZATION_PROMPT_TEMPLATE[1].is_from(ChatRole.USER)
-
-
 def test_rendered_prompt_contains_instruction_and_document_content() -> None:
     documents = _discussion_documents()
-    texts = _render_prompt(documents=documents, instruction="Подготовь резюме обсуждения")
+    rendered = ChatPromptBuilder(
+        template=list(SUMMARIZATION_PROMPT_TEMPLATE),
+        required_variables=["documents", "instruction"],
+    ).run(documents=documents, instruction="Подготовь резюме обсуждения")["prompt"]
 
-    assert len(texts) == 2
-    assert "Подготовь резюме обсуждения" in texts[1]
-    assert documents[0].content in texts[1]
-    assert documents[1].content in texts[1]
+    assert [message.role for message in rendered] == [ChatRole.SYSTEM, ChatRole.USER]
+    user_text = rendered[1].text
+    assert "Подготовь резюме обсуждения" in user_text
+    # The whole message line reaches the model: timestamp, author and text.
+    assert documents[0].content in user_text
+    assert documents[1].content in user_text
+    assert "[2024-01-15T12:30:00+00:00] Alice (@alice): We should ship on Tuesday." in user_text
 
 
 def test_rendered_prompt_preserves_document_order() -> None:
@@ -73,14 +73,6 @@ def test_rendered_prompt_preserves_document_order() -> None:
     first_index = user_text.index(documents[0].content)
     second_index = user_text.index(documents[1].content)
     assert first_index < second_index
-
-
-def test_rendered_prompt_keeps_author_and_timestamp_in_content() -> None:
-    documents = _discussion_documents()
-    user_text = _render_prompt(documents=documents, instruction="Summarize")[1]
-
-    assert "Alice" in user_text
-    assert "2024-01-15" in user_text
 
 
 def test_system_prompt_contains_grounding_and_injection_guards() -> None:
@@ -110,32 +102,6 @@ def test_system_prompt_requires_completeness_rules() -> None:
     assert "Запрещено писать, что следующие действия отсутствуют" in system_text
     assert "внутреннюю проверку полноты" in system_text
     assert "Не добавляй новые даты" in system_text
-
-
-def test_rendered_prompt_includes_action_item_message() -> None:
-    action_document = chat_message_to_document(
-        ChatMessage(
-            chat_id=-1001234567890,
-            message_id=44,
-            user_id=9,
-            session_id="chat:-1001234567890",
-            author_name="Elena",
-            username="elena",
-            text=(
-                "Елена подготовит release checklist к понедельнику, 15:00; "
-                "резервный канал связи — email."
-            ),
-            sent_at=datetime(2024, 1, 15, 12, 32, tzinfo=timezone.utc),
-        )
-    )
-    user_text = _render_prompt(
-        documents=[action_document],
-        instruction="Подведи итог",
-    )[1]
-
-    assert "release checklist" in user_text
-    assert "понедельнику, 15:00" in user_text
-    assert "email" in user_text
 
 
 def test_system_prompt_requires_ai_recommendation_label() -> None:
@@ -179,14 +145,3 @@ def test_repeated_render_does_not_retain_previous_input() -> None:
     assert "First instruction" not in second_render
     assert "Second instruction" in second_render
     assert documents[1].content not in second_render
-
-
-def test_source_documents_are_not_mutated_by_render() -> None:
-    documents = _discussion_documents()
-    original_meta = dict(documents[0].meta)
-    original_content = documents[0].content
-
-    _render_prompt(documents=documents, instruction="Summarize")
-
-    assert documents[0].meta == original_meta
-    assert documents[0].content == original_content

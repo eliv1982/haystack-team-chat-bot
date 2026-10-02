@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+# The application modules sit in the repository root (flat layout). Putting it on
+# sys.path makes a bare `pytest` behave like `python -m pytest`.
+pythonpath = ["."]
+testpaths = ["tests"]

@@ -1,15 +1,24 @@
-"""Tests for live smoke-test helper functions."""
+"""Tests for the helpers and control flow of the live indexing smoke script.
+
+The script itself needs real OpenAI and Pinecone access and is run by hand. These
+tests cover only its own logic (polling, verification, exit codes and cleanup); the
+indexing service it exercises is tested in test_indexing_service.py and
+test_indexing_failure.py.
+"""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from haystack import Document
 
 from documents import chat_message_to_document
+from fakes import ticking_clock
 from models import ChatMessage
+from scripts import smoke_test_indexing as smoke_script
 from scripts.smoke_test_indexing import (
     SmokeCleanupError,
     SmokeVerificationError,
@@ -46,9 +55,7 @@ def _expected_document(
     *,
     message_id: int = 12345,
 ) -> Document:
-    return chat_message_to_document(
-        _expected_message(session_id=session_id, message_id=message_id)
-    )
+    return chat_message_to_document(_expected_message(session_id=session_id, message_id=message_id))
 
 
 def _retrieved_document(
@@ -66,6 +73,10 @@ def _retrieved_document(
     )
 
 
+def _other_session_document() -> Document:
+    return _retrieved_document(_expected_document(session_id="other-session", message_id=99999))
+
+
 def test_build_smoke_message_uses_unique_session_id() -> None:
     message_one, session_one = build_smoke_message()
     message_two, session_two = build_smoke_message()
@@ -77,12 +88,52 @@ def test_build_smoke_message_uses_unique_session_id() -> None:
     assert message_one.sent_at.tzinfo is not None
 
 
+def test_build_session_filter_uses_exact_session_id() -> None:
+    assert build_session_filter("smoke-abc") == {
+        "field": "session_id",
+        "operator": "==",
+        "value": "smoke-abc",
+    }
+
+
+def test_find_document_by_id_returns_exact_match() -> None:
+    expected = _expected_document()
+    documents = [Document(id="other", content="x"), expected]
+
+    assert find_document_by_id(documents, expected.id) is expected
+
+
+@pytest.mark.parametrize(
+    "retrieved",
+    [
+        Document(id="other", content="x", meta={"session_id": "smoke-test-session"}),
+        _retrieved_document(_expected_document(), include_embedding=False),
+        _retrieved_document(_expected_document(), embedding_dimension=10),
+        Document(
+            id=_expected_document().id,
+            content=_expected_document().content,
+            meta={"session_id": "different-session"},
+        ),
+    ],
+    ids=["other-document", "missing-embedding", "wrong-dimension", "other-session"],
+)
+def test_verify_retrieved_document_rejects_malformed_data(retrieved: Document) -> None:
+    with pytest.raises(SmokeVerificationError):
+        verify_retrieved_document(retrieved, _expected_document(), 1536)
+
+
+# --- polling for visibility and cleanup ------------------------------------------
+
+
 def test_wait_for_document_visible_succeeds_after_retries() -> None:
     expected = _expected_document()
     document_store = MagicMock()
-    other = _retrieved_document(_expected_document(session_id="other-session", message_id=99999))
     found = _retrieved_document(expected)
-    document_store.filter_documents.side_effect = [[other], [other], [found]]
+    document_store.filter_documents.side_effect = [
+        [_other_session_document()],
+        [_other_session_document()],
+        [found],
+    ]
 
     attempts, retrieved = wait_for_document_visible(
         document_store,
@@ -99,41 +150,48 @@ def test_wait_for_document_visible_succeeds_after_retries() -> None:
     assert retrieved.id == expected.id
 
 
-def test_wait_for_document_visible_ignores_unrelated_documents() -> None:
+@pytest.mark.parametrize(
+    "stored",
+    [[], [_other_session_document()]],
+    ids=["nothing-visible", "only-an-unrelated-document"],
+)
+def test_wait_for_document_visible_keeps_polling_until_it_gives_up(stored: list[Document]) -> None:
+    expected = _expected_document()
+    document_store = MagicMock()
+    document_store.filter_documents.return_value = stored
+
+    with pytest.raises(SmokeVisibilityTimeoutError):
+        wait_for_document_visible(
+            document_store,
+            expected,
+            expected.meta["session_id"],
+            1536,
+            timeout_seconds=3.0,
+            poll_interval_seconds=0.0,
+            sleep=lambda _: None,
+            monotonic=ticking_clock(),
+        )
+
+    assert document_store.filter_documents.call_count >= 2  # it really polled
+
+
+def test_wait_for_document_visible_refuses_a_visible_document_that_is_wrong() -> None:
     expected = _expected_document()
     document_store = MagicMock()
     document_store.filter_documents.return_value = [
-        _retrieved_document(_expected_document(session_id="other-session", message_id=99999))
+        _retrieved_document(expected, embedding_dimension=10)
     ]
 
-    with pytest.raises(SmokeVisibilityTimeoutError):
+    with pytest.raises(SmokeVerificationError):
         wait_for_document_visible(
             document_store,
             expected,
             expected.meta["session_id"],
             1536,
-            timeout_seconds=0.0,
+            timeout_seconds=3.0,
             poll_interval_seconds=0.0,
             sleep=lambda _: None,
-            monotonic=lambda: 0.0,
-        )
-
-
-def test_wait_for_document_visible_times_out() -> None:
-    expected = _expected_document()
-    document_store = MagicMock()
-    document_store.filter_documents.return_value = []
-
-    with pytest.raises(SmokeVisibilityTimeoutError):
-        wait_for_document_visible(
-            document_store,
-            expected,
-            expected.meta["session_id"],
-            1536,
-            timeout_seconds=0.0,
-            poll_interval_seconds=0.0,
-            sleep=lambda _: None,
-            monotonic=lambda: 0.0,
+            monotonic=ticking_clock(),
         )
 
 
@@ -158,8 +216,7 @@ def test_wait_for_document_absent_succeeds_after_retries() -> None:
 def test_wait_for_document_absent_ignores_unrelated_documents() -> None:
     expected = _expected_document()
     document_store = MagicMock()
-    other = _retrieved_document(_expected_document(session_id="other-session", message_id=99999))
-    document_store.filter_documents.return_value = [other]
+    document_store.filter_documents.return_value = [_other_session_document()]
 
     attempts = wait_for_document_absent(
         document_store,
@@ -174,7 +231,7 @@ def test_wait_for_document_absent_ignores_unrelated_documents() -> None:
     assert attempts == 1
 
 
-def test_wait_for_document_absent_times_out() -> None:
+def test_wait_for_document_absent_gives_up_while_the_document_remains() -> None:
     expected = _expected_document()
     document_store = MagicMock()
     document_store.filter_documents.return_value = [_retrieved_document(expected)]
@@ -184,226 +241,86 @@ def test_wait_for_document_absent_times_out() -> None:
             document_store,
             expected.id,
             expected.meta["session_id"],
-            timeout_seconds=0.0,
+            timeout_seconds=3.0,
             poll_interval_seconds=0.0,
             sleep=lambda _: None,
-            monotonic=lambda: 0.0,
+            monotonic=ticking_clock(),
         )
 
-
-@pytest.mark.parametrize(
-    "retrieved",
-    [
-        Document(id="other", content="x", meta={"session_id": "smoke-test-session"}),
-        _retrieved_document(_expected_document(), include_embedding=False),
-        _retrieved_document(_expected_document(), embedding_dimension=10),
-        Document(
-            id=_expected_document().id,
-            content=_expected_document().content,
-            meta={"session_id": "different-session"},
-        ),
-    ],
-)
-def test_verify_retrieved_document_rejects_malformed_data(retrieved: Document) -> None:
-    expected = _expected_document()
-
-    with pytest.raises(SmokeVerificationError):
-        verify_retrieved_document(retrieved, expected, 1536)
+    assert document_store.filter_documents.call_count >= 2  # it really polled
 
 
-def test_find_document_by_id_returns_exact_match() -> None:
-    expected = _expected_document()
-    documents = [
-        Document(id="other", content="x"),
-        expected,
-    ]
-
-    assert find_document_by_id(documents, expected.id) is expected
+# --- run_smoke_test: exit codes and the guarantee that cleanup always runs -------
 
 
-def test_build_session_filter_uses_exact_session_id() -> None:
-    assert build_session_filter("smoke-abc") == {
-        "field": "session_id",
-        "operator": "==",
-        "value": "smoke-abc",
-    }
-
-
-@patch("scripts.smoke_test_indexing.wait_for_document_absent")
-@patch("scripts.smoke_test_indexing.wait_for_document_visible")
-@patch("scripts.smoke_test_indexing.IndexingService")
-@patch("scripts.smoke_test_indexing.create_indexing_pipeline")
-@patch("scripts.smoke_test_indexing.create_pinecone_document_store")
-@patch("scripts.smoke_test_indexing.validate_existing_pinecone_index")
-@patch("scripts.smoke_test_indexing.load_settings")
-def test_run_smoke_test_success(
-    mock_load_settings: MagicMock,
-    mock_validate: MagicMock,
-    mock_create_store: MagicMock,
-    mock_create_pipeline: MagicMock,
-    mock_indexing_service_cls: MagicMock,
-    mock_wait_visible: MagicMock,
-    mock_wait_absent: MagicMock,
-) -> None:
-    settings = MagicMock()
-    settings.pinecone_index_name = "test-index"
-    settings.pinecone_namespace = "haystack-team-chat-homework"
-    settings.pinecone_dimension = 1536
-    settings.pinecone_metric = "cosine"
-    mock_load_settings.return_value = settings
-    mock_validate.return_value = MagicMock(
-        name="test-index",
-        dimension=1536,
-        metric="cosine",
-        ready=True,
-        status="Ready",
+@pytest.fixture
+def smoke_run(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """run_smoke_test with everything that would reach Pinecone or OpenAI replaced."""
+    expected = _expected_document(session_id="smoke-run")
+    run = SimpleNamespace(
+        expected=expected,
+        document_store=MagicMock(name="document_store"),
+        indexing_service=MagicMock(name="indexing_service"),
+        wait_visible=MagicMock(name="wait_visible", return_value=(2, _retrieved_document(expected))),
+        wait_absent=MagicMock(name="wait_absent", return_value=3),
     )
-    document_store = MagicMock()
-    mock_create_store.return_value = document_store
-    service = MagicMock()
-    service.index_messages.return_value = 1
-    mock_indexing_service_cls.return_value = service
-    expected = _expected_document(session_id="smoke-run")
-    mock_wait_visible.return_value = (2, _retrieved_document(expected))
-    mock_wait_absent.return_value = 3
+    run.indexing_service.index_messages.return_value = 1
+    settings = MagicMock(
+        pinecone_index_name="test-index",
+        pinecone_namespace="haystack-team-chat-homework",
+        pinecone_dimension=1536,
+        pinecone_metric="cosine",
+    )
+    replacements = {
+        "load_settings": lambda: settings,
+        "validate_existing_pinecone_index": MagicMock(),
+        "create_pinecone_document_store": lambda _settings: run.document_store,
+        "create_indexing_pipeline": MagicMock(),
+        "IndexingService": lambda _pipeline: run.indexing_service,
+        "build_smoke_message": lambda: (_expected_message(session_id="smoke-run"), "smoke-run"),
+        "chat_message_to_document": lambda _message: expected,
+        "wait_for_document_visible": run.wait_visible,
+        "wait_for_document_absent": run.wait_absent,
+    }
+    for name, replacement in replacements.items():
+        monkeypatch.setattr(smoke_script, name, replacement)
+    return run
 
-    with (
-        patch("scripts.smoke_test_indexing.build_smoke_message") as mock_build_message,
-        patch("scripts.smoke_test_indexing.chat_message_to_document", return_value=expected),
-    ):
-        mock_build_message.return_value = (_expected_message(session_id="smoke-run"), "smoke-run")
-        exit_code = run_smoke_test()
 
-    assert exit_code == 0
-    service.index_messages.assert_called_once()
-    document_store.delete_documents.assert_called_once_with([expected.id])
-    mock_wait_absent.assert_called_once()
+def _assert_cleaned_up(run: SimpleNamespace) -> None:
+    run.document_store.delete_documents.assert_called_once_with([run.expected.id])
+    run.wait_absent.assert_called_once()
 
 
-@patch("scripts.smoke_test_indexing.wait_for_document_absent")
-@patch("scripts.smoke_test_indexing.wait_for_document_visible")
-@patch("scripts.smoke_test_indexing.IndexingService")
-@patch("scripts.smoke_test_indexing.create_indexing_pipeline")
-@patch("scripts.smoke_test_indexing.create_pinecone_document_store")
-@patch("scripts.smoke_test_indexing.validate_existing_pinecone_index")
-@patch("scripts.smoke_test_indexing.load_settings")
-def test_run_smoke_test_fails_when_documents_written_not_one(
-    mock_load_settings: MagicMock,
-    mock_validate: MagicMock,
-    mock_create_store: MagicMock,
-    mock_create_pipeline: MagicMock,
-    mock_indexing_service_cls: MagicMock,
-    mock_wait_visible: MagicMock,
-    mock_wait_absent: MagicMock,
+def test_run_smoke_test_success(smoke_run: SimpleNamespace) -> None:
+    assert run_smoke_test() == 0
+
+    smoke_run.indexing_service.index_messages.assert_called_once()
+    _assert_cleaned_up(smoke_run)
+
+
+def test_run_smoke_test_fails_and_cleans_up_when_documents_written_is_not_one(
+    smoke_run: SimpleNamespace,
 ) -> None:
-    settings = MagicMock()
-    settings.pinecone_index_name = "test-index"
-    settings.pinecone_namespace = "haystack-team-chat-homework"
-    settings.pinecone_dimension = 1536
-    settings.pinecone_metric = "cosine"
-    mock_load_settings.return_value = settings
-    mock_validate.return_value = MagicMock()
-    document_store = MagicMock()
-    mock_create_store.return_value = document_store
-    service = MagicMock()
-    service.index_messages.return_value = 0
-    mock_indexing_service_cls.return_value = service
-    expected = _expected_document(session_id="smoke-run")
-    mock_wait_absent.return_value = 1
+    smoke_run.indexing_service.index_messages.return_value = 0
 
-    with (
-        patch("scripts.smoke_test_indexing.build_smoke_message") as mock_build_message,
-        patch("scripts.smoke_test_indexing.chat_message_to_document", return_value=expected),
-    ):
-        mock_build_message.return_value = (_expected_message(session_id="smoke-run"), "smoke-run")
-        exit_code = run_smoke_test()
+    assert run_smoke_test() == 1
 
-    assert exit_code == 1
-    mock_wait_visible.assert_not_called()
-    document_store.delete_documents.assert_called_once_with([expected.id])
+    smoke_run.wait_visible.assert_not_called()
+    _assert_cleaned_up(smoke_run)
 
 
-@patch("scripts.smoke_test_indexing.wait_for_document_absent")
-@patch("scripts.smoke_test_indexing.wait_for_document_visible")
-@patch("scripts.smoke_test_indexing.IndexingService")
-@patch("scripts.smoke_test_indexing.create_indexing_pipeline")
-@patch("scripts.smoke_test_indexing.create_pinecone_document_store")
-@patch("scripts.smoke_test_indexing.validate_existing_pinecone_index")
-@patch("scripts.smoke_test_indexing.load_settings")
-def test_run_smoke_test_runs_cleanup_on_verification_failure(
-    mock_load_settings: MagicMock,
-    mock_validate: MagicMock,
-    mock_create_store: MagicMock,
-    mock_create_pipeline: MagicMock,
-    mock_indexing_service_cls: MagicMock,
-    mock_wait_visible: MagicMock,
-    mock_wait_absent: MagicMock,
-) -> None:
-    settings = MagicMock()
-    settings.pinecone_index_name = "test-index"
-    settings.pinecone_namespace = "haystack-team-chat-homework"
-    settings.pinecone_dimension = 1536
-    settings.pinecone_metric = "cosine"
-    mock_load_settings.return_value = settings
-    mock_validate.return_value = MagicMock()
-    document_store = MagicMock()
-    mock_create_store.return_value = document_store
-    service = MagicMock()
-    service.index_messages.return_value = 1
-    mock_indexing_service_cls.return_value = service
-    expected = _expected_document(session_id="smoke-run")
-    mock_wait_visible.side_effect = SmokeVisibilityTimeoutError("timeout")
-    mock_wait_absent.return_value = 1
+def test_run_smoke_test_cleans_up_after_a_verification_failure(smoke_run: SimpleNamespace) -> None:
+    smoke_run.wait_visible.side_effect = SmokeVisibilityTimeoutError("timeout")
 
-    with (
-        patch("scripts.smoke_test_indexing.build_smoke_message") as mock_build_message,
-        patch("scripts.smoke_test_indexing.chat_message_to_document", return_value=expected),
-    ):
-        mock_build_message.return_value = (_expected_message(session_id="smoke-run"), "smoke-run")
-        exit_code = run_smoke_test()
+    assert run_smoke_test() == 1
 
-    assert exit_code == 1
-    document_store.delete_documents.assert_called_once_with([expected.id])
+    _assert_cleaned_up(smoke_run)
 
 
-@patch("scripts.smoke_test_indexing.wait_for_document_absent")
-@patch("scripts.smoke_test_indexing.wait_for_document_visible")
-@patch("scripts.smoke_test_indexing.IndexingService")
-@patch("scripts.smoke_test_indexing.create_indexing_pipeline")
-@patch("scripts.smoke_test_indexing.create_pinecone_document_store")
-@patch("scripts.smoke_test_indexing.validate_existing_pinecone_index")
-@patch("scripts.smoke_test_indexing.load_settings")
-def test_run_smoke_test_fails_when_cleanup_not_confirmed(
-    mock_load_settings: MagicMock,
-    mock_validate: MagicMock,
-    mock_create_store: MagicMock,
-    mock_create_pipeline: MagicMock,
-    mock_indexing_service_cls: MagicMock,
-    mock_wait_visible: MagicMock,
-    mock_wait_absent: MagicMock,
-) -> None:
-    settings = MagicMock()
-    settings.pinecone_index_name = "test-index"
-    settings.pinecone_namespace = "haystack-team-chat-homework"
-    settings.pinecone_dimension = 1536
-    settings.pinecone_metric = "cosine"
-    mock_load_settings.return_value = settings
-    mock_validate.return_value = MagicMock()
-    document_store = MagicMock()
-    mock_create_store.return_value = document_store
-    service = MagicMock()
-    service.index_messages.return_value = 1
-    mock_indexing_service_cls.return_value = service
-    expected = _expected_document(session_id="smoke-run")
-    mock_wait_visible.return_value = (1, _retrieved_document(expected))
-    mock_wait_absent.side_effect = SmokeCleanupError("still visible")
+def test_run_smoke_test_fails_when_cleanup_is_not_confirmed(smoke_run: SimpleNamespace) -> None:
+    smoke_run.wait_absent.side_effect = SmokeCleanupError("still visible")
 
-    with (
-        patch("scripts.smoke_test_indexing.build_smoke_message") as mock_build_message,
-        patch("scripts.smoke_test_indexing.chat_message_to_document", return_value=expected),
-    ):
-        mock_build_message.return_value = (_expected_message(session_id="smoke-run"), "smoke-run")
-        exit_code = run_smoke_test()
+    assert run_smoke_test() == 1
 
-    assert exit_code == 1
-    document_store.delete_documents.assert_called_once_with([expected.id])
+    smoke_run.document_store.delete_documents.assert_called_once_with([smoke_run.expected.id])

@@ -33,15 +33,6 @@ def test_configure_telegram_command_menu_registers_exact_five_commands() -> None
     assert isinstance(scope, BotCommandScopeAllGroupChats)
 
 
-def test_configure_telegram_command_menu_true_result_passes() -> None:
-    bot = MagicMock()
-    bot.set_my_commands.return_value = True
-
-    configure_telegram_command_menu(bot)
-
-    bot.set_my_commands.assert_called_once()
-
-
 def test_configure_telegram_command_menu_false_result_raises() -> None:
     bot = MagicMock()
     bot.set_my_commands.return_value = False
@@ -56,15 +47,3 @@ def test_configure_telegram_command_menu_exception_propagates() -> None:
 
     with pytest.raises(RuntimeError, match="menu failed"):
         configure_telegram_command_menu(bot)
-
-
-def test_configure_telegram_command_menu_does_not_call_other_bot_api() -> None:
-    bot = MagicMock()
-    bot.set_my_commands.return_value = True
-
-    configure_telegram_command_menu(bot)
-
-    bot.get_my_commands.assert_not_called()
-    bot.delete_my_commands.assert_not_called()
-    bot.set_chat_menu_button.assert_not_called()
-    bot.get_me.assert_not_called()

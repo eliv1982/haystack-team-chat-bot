@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import ast
 import dataclasses
 import io
 import logging
+import runpy
 import traceback
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -40,23 +40,20 @@ def runtime_components() -> runtime.RuntimeComponents:
     )
 
 
-def test_import_bot_does_not_start_main() -> None:
-    bot_source = Path(__file__).resolve().parent.parent / "bot.py"
-    bot_tree = ast.parse(bot_source.read_text(encoding="utf-8"))
-    forbidden_calls = {"configure_logging", "build_runtime", "run_polling", "main"}
+def test_running_bot_py_as_a_script_starts_main(
+    runtime_components: runtime.RuntimeComponents,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[object] = []
+    monkeypatch.setattr(runtime, "configure_logging", lambda: calls.append("configure_logging"))
+    monkeypatch.setattr(
+        runtime, "build_runtime", lambda: calls.append("build_runtime") or runtime_components
+    )
+    monkeypatch.setattr(runtime, "run_polling", lambda polled_bot: calls.append(("poll", polled_bot)))
 
-    for node in bot_tree.body:
-        if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
-            continue
-        call = node.value
-        if isinstance(call.func, ast.Name) and call.func.id in forbidden_calls:
-            pytest.fail(f"bot.py must not call {call.func.id} at import time")
+    runpy.run_path(str(Path(bot.__file__)), run_name="__main__")
 
-
-def test_import_bot_does_not_create_global_runtime() -> None:
-    assert not hasattr(bot, "runtime")
-    assert not hasattr(bot, "bot")
-    assert not hasattr(bot, "store")
+    assert calls == ["configure_logging", "build_runtime", ("poll", runtime_components.bot)]
 
 
 def test_main_wires_startup_once(runtime_components: runtime.RuntimeComponents) -> None:

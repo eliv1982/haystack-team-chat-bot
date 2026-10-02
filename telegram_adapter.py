@@ -129,24 +129,6 @@ def is_summary_phrase_text(text: object) -> bool:
     return normalized in _SUMMARY_PHRASE_ALIASES
 
 
-def is_summary_command_text(text: object) -> bool:
-    if not isinstance(text, str):
-        return False
-    stripped = text.strip()
-    if not stripped.startswith("/"):
-        return False
-    if len(stripped.split()) != 1:
-        return False
-    command_token = stripped.split()[0][1:]
-    command_name = command_token.split("@", 1)[0]
-    return command_name == "summary"
-
-
-def is_summary_request_text(text: object) -> bool:
-    """Return True for exact natural-language summary phrase aliases."""
-    return is_summary_phrase_text(text)
-
-
 def require_group_chat_id(message: telebot.types.Message) -> int:
     if message.chat is None:
         raise TelegramAdapterError("message.chat is required")

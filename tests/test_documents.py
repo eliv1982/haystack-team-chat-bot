@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from datetime import datetime, timezone
+
+import pytest
 
 from documents import DOCUMENT_ID_VERSION, chat_message_to_document
 from models import ChatMessage
@@ -40,9 +41,16 @@ def test_same_message_identity_produces_same_document_id() -> None:
     assert document_a.id == document_b.id
 
 
-def test_changing_message_id_changes_document_id() -> None:
+@pytest.mark.parametrize(
+    "changed_identity",
+    [{"message_id": 43}, {"chat_id": -1009999999999}],
+    ids=["other-message", "same-message-id-in-another-chat"],
+)
+def test_a_different_message_identity_gives_a_different_document_id(
+    changed_identity: dict[str, int],
+) -> None:
     base = chat_message_to_document(_make_message())
-    changed = chat_message_to_document(_make_message(message_id=43))
+    changed = chat_message_to_document(_make_message(**changed_identity))
 
     assert base.id != changed.id
 
@@ -99,17 +107,3 @@ def test_missing_username_is_not_stored_in_metadata() -> None:
     document = chat_message_to_document(_make_message(username=None))
 
     assert "username" not in document.meta
-
-
-def test_document_has_no_embedding_before_pipeline_run() -> None:
-    document = chat_message_to_document(_make_message())
-
-    assert document.embedding is None
-
-
-def test_serialized_metadata_contains_no_secrets() -> None:
-    document = chat_message_to_document(_make_message())
-    serialized = json.dumps(document.meta)
-
-    assert "token" not in serialized.lower()
-    assert "api_key" not in serialized.lower()

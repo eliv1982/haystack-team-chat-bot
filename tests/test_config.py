@@ -160,17 +160,6 @@ def test_error_messages_do_not_reveal_secret_values(
     assert secret_value not in message
 
 
-def test_missing_openai_base_url_is_allowed(
-    clean_config_env: None,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _set_env(monkeypatch, REQUIRED_ENV)
-
-    settings = load_settings(dotenv_path=None)
-
-    assert settings.api_base_url is None
-
-
 @pytest.mark.parametrize("raw_value", ["", "   "])
 def test_empty_or_whitespace_openai_base_url_normalizes_to_none(
     clean_config_env: None,

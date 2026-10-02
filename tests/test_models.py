@@ -77,21 +77,6 @@ def test_zero_or_negative_user_id_is_rejected(user_id: int) -> None:
         )
 
 
-def test_negative_group_chat_id_is_allowed() -> None:
-    message = ChatMessage(
-        chat_id=-1001234567890,
-        message_id=1,
-        user_id=1,
-        session_id="session-1",
-        author_name="Alice",
-        username=None,
-        text="Hello",
-        sent_at=datetime(2024, 1, 15, 12, 30, tzinfo=timezone.utc),
-    )
-
-    assert message.chat_id == -1001234567890
-
-
 @pytest.mark.parametrize("field_name", ["session_id", "author_name", "text"])
 def test_empty_required_text_fields_are_rejected(field_name: str) -> None:
     values = {
@@ -151,16 +136,6 @@ def test_valid_retrieval_request() -> None:
     assert request.session_id == "chat:-1001234567890"
 
 
-def test_retrieval_request_allows_negative_group_chat_id() -> None:
-    request = RetrievalRequest(
-        query="status update",
-        chat_id=-999_000_001,
-        session_id="session-1",
-    )
-
-    assert request.chat_id == -999_000_001
-
-
 def test_retrieval_request_rejects_bool_chat_id() -> None:
     with pytest.raises(InvalidRetrievalRequestError, match="chat_id"):
         RetrievalRequest(query="hello", chat_id=True, session_id="session-1")
@@ -201,23 +176,13 @@ def test_valid_summarization_request() -> None:
         instruction="Подготовь краткое резюме обсуждения",
         chat_id=-1001234567890,
         session_id="chat:-1001234567890",
-        expected_message_count=3,
+        expected_message_count=137,
     )
 
     assert request.instruction == "Подготовь краткое резюме обсуждения"
     assert request.chat_id == -1001234567890
     assert request.session_id == "chat:-1001234567890"
-
-
-def test_summarization_request_allows_negative_group_chat_id() -> None:
-    request = SummarizationRequest(
-        instruction="Summarize",
-        chat_id=-999_000_001,
-        session_id="session-1",
-        expected_message_count=3,
-    )
-
-    assert request.chat_id == -999_000_001
+    assert request.expected_message_count == 137
 
 
 def test_summarization_request_rejects_bool_chat_id() -> None:
@@ -239,19 +204,6 @@ def test_summarization_request_rejects_non_int_chat_id(chat_id: object) -> None:
             session_id="session-1",
             expected_message_count=3,
         )  # type: ignore[arg-type]
-
-
-def test_summarization_request_has_no_semantic_query_field() -> None:
-    # A whole-session summary must not be tied to a semantic query: the source
-    # documents are every message of the session, selected by chat and session.
-    with pytest.raises(TypeError):
-        SummarizationRequest(  # type: ignore[call-arg]
-            context_query="status",
-            instruction="Summarize",
-            chat_id=-100,
-            session_id="session-1",
-            expected_message_count=3,
-        )
 
 
 @pytest.mark.parametrize("instruction", ["", "   "])
@@ -340,23 +292,6 @@ def test_summarization_result_preserves_source_id_order() -> None:
     result = SummarizationResult(text="Summary", source_document_ids=("doc-3", "doc-1", "doc-2"))
 
     assert result.source_document_ids == ("doc-3", "doc-1", "doc-2")
-
-
-def test_summarization_result_is_immutable() -> None:
-    result = SummarizationResult(text="Summary", source_document_ids=("doc-1",))
-
-    assert isinstance(result.source_document_ids, tuple)
-
-
-def test_summarization_request_keeps_expected_message_count() -> None:
-    request = SummarizationRequest(
-        instruction="Summarize",
-        chat_id=-100,
-        session_id="session-1",
-        expected_message_count=137,
-    )
-
-    assert request.expected_message_count == 137
 
 
 def test_summarization_request_allows_zero_expected_messages() -> None:

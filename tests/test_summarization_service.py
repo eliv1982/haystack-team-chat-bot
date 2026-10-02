@@ -106,12 +106,12 @@ def service(session_documents: MagicMock, pipeline: MagicMock) -> SummarizationS
     )
 
 
-def test_summarize_loads_whole_session_once_by_chat_and_session(
+def test_summarize_loads_whole_session_once_gated_by_the_registered_count(
     service: SummarizationService,
     session_documents: MagicMock,
     pipeline: MagicMock,
 ) -> None:
-    request = _summarization_request()
+    request = _summarization_request(expected_message_count=137)
     session_documents.fetch.return_value = (_document(),)
     pipeline.run.return_value = _pipeline_result()
 
@@ -122,31 +122,6 @@ def test_summarize_loads_whole_session_once_by_chat_and_session(
         session_id=request.session_id,
         expected_count=request.expected_message_count,
     )
-
-
-def test_summarize_does_not_mutate_request(
-    service: SummarizationService,
-    session_documents: MagicMock,
-    pipeline: MagicMock,
-) -> None:
-    request = _summarization_request()
-    original = (
-        request.instruction,
-        request.chat_id,
-        request.session_id,
-        request.expected_message_count,
-    )
-    session_documents.fetch.return_value = (_document(),)
-    pipeline.run.return_value = _pipeline_result()
-
-    service.summarize(request)
-
-    assert (
-        request.instruction,
-        request.chat_id,
-        request.session_id,
-        request.expected_message_count,
-    ) == original
 
 
 def test_summarize_raises_when_session_has_no_documents(
@@ -299,21 +274,6 @@ def test_summarize_does_not_swallow_pipeline_errors(
     pipeline.run.assert_called_once()
 
 
-def test_summarize_has_no_direct_openai_or_pinecone_fallback(
-    service: SummarizationService,
-    session_documents: MagicMock,
-    pipeline: MagicMock,
-) -> None:
-    session_documents.fetch.return_value = (_document(),)
-    pipeline.run.side_effect = RuntimeError("pipeline failed")
-
-    with pytest.raises(RuntimeError):
-        service.summarize(_summarization_request())
-
-    assert not hasattr(service, "_document_store")
-    assert not hasattr(service, "_openai_client")
-
-
 @pytest.mark.parametrize(
     "gate_error",
     [
@@ -335,16 +295,3 @@ def test_summarize_never_calls_the_model_when_the_completeness_gate_fails(
         service.summarize(_summarization_request(expected_message_count=137))
 
     pipeline.run.assert_not_called()
-
-
-def test_summarize_forwards_the_registered_message_count_to_the_gate(
-    service: SummarizationService,
-    session_documents: MagicMock,
-    pipeline: MagicMock,
-) -> None:
-    session_documents.fetch.return_value = (_document(),)
-    pipeline.run.return_value = _pipeline_result()
-
-    service.summarize(_summarization_request(expected_message_count=137))
-
-    assert session_documents.fetch.call_args.kwargs["expected_count"] == 137
