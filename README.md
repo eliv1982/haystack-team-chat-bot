@@ -175,9 +175,9 @@ These call real OpenAI and Pinecone with your credentials, may incur cost, and a
 | `python scripts/smoke_test_retrieval.py` | the retrieval probe: filtered semantic search isolates one session and one chat (target session, another session of the same chat, another chat) |
 | `python scripts/smoke_test_summarization.py` | the **production summary path** on a seven-message synthetic corpus: whole-session load and completeness gate, then a summary checked for exact source set, structure, grounded facts, absence of foreign-session facts and absence of architecture terms |
 
-Each script writes synthetic documents under reserved fake chat IDs into your configured index and namespace, deletes them in a `finally` block and confirms the deletion; if cleanup cannot be confirmed it prints the IDs for manual removal. The repository does not record when they were last run.
+Each script writes synthetic documents under reserved fake chat IDs into your configured index and namespace, deletes them in a `finally` block and confirms the deletion; if cleanup cannot be confirmed it prints the IDs for manual removal. All three were run live against the current build on 2026-10-02 and passed.
 
-Manual Telegram acceptance (a reproducible checklist, plus the limits of the one historical run): [docs/live_telegram_acceptance.md](docs/live_telegram_acceptance.md).
+Manual Telegram acceptance (a reproducible checklist, the 2026-10-02 run on the current build, and the 2026-07-12 run kept as history for an earlier version): [docs/live_telegram_acceptance.md](docs/live_telegram_acceptance.md).
 
 ## Data handling and privacy
 
@@ -220,7 +220,7 @@ store.delete_by_filter(build_session_filter(chat_id=-1001234567890, session_id="
 store.delete_by_filter({"field": "meta.chat_id", "operator": "==", "value": "-1001234567890"})
 ```
 
-`delete_by_filter` loads the matches through the same filter query, which returns at most 1,000 documents, so repeat it until it returns `0`. `store.delete_all_documents()` empties the entire configured namespace. You can also delete by ID or namespace in the Pinecone console. The filters are checked against the store's filter validation offline; this snippet has not been run against a live index.
+`delete_by_filter` loads the matches through the same filter query, which returns at most 1,000 documents, so repeat it until it returns `0`. `store.delete_all_documents()` empties the entire configured namespace. You can also delete by ID or namespace in the Pinecone console. The single-session deletion was run against a live index on 2026-10-02 (see the [acceptance record](docs/live_telegram_acceptance.md)); the chat-wide filter and `delete_all_documents()` have only been checked against the store's filter validation offline.
 
 ## Known limitations
 

@@ -7,7 +7,7 @@ What comes next for the Telegram discussion summarizer. Nothing here is implemen
 - Capture of text messages during an explicit listening session; deterministic document IDs; Pinecone storage with hard chat/session isolation.
 - Whole-session, chronologically ordered summarization behind an exact completeness gate; refusal instead of partial results.
 - In-memory session registry: one active and one latest completed session per chat, lost on restart.
-- Offline suite and CI; live smoke tooling.
+- Offline suite and CI; live smoke tooling; one recorded live Telegram acceptance run on this build (2026-10-02, see the [record](live_telegram_acceptance.md)).
 
 ## P1: meaningful product evolution
 
@@ -53,7 +53,6 @@ If the bot is used outside a single trusted group: restrict who can start, stop 
 
 ## Maintenance
 
-- Run the [live Telegram acceptance](live_telegram_acceptance.md) against the current build and record the result.
 - Decide the fate of the retrieval pipeline and `RETRIEVAL_TOP_K`: keep them if a semantic-search feature is planned, otherwise remove them together with their smoke test.
 
 ## Deliberately not planned
