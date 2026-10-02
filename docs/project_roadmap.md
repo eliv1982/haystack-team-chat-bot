@@ -1,208 +1,61 @@
-# Project Roadmap
+# Roadmap
 
-Technical plan for evolving the homework-stage Telegram bot into a team AI assistant. Product direction is described in the README section **«Дальнейшее масштабирование»**. Nothing in this document is implemented in the current MVP unless explicitly stated elsewhere.
+What comes next for the Telegram discussion summarizer. Nothing here is implemented; the [README](../README.md) describes what exists, including the [known limitations](../README.md#known-limitations) these items address.
 
 ## Current baseline
 
-- `InMemorySessionStore` — one active and one latest completed session per chat
-- Session registry is lost on process restart; Pinecone documents remain
-- No arbitrary historical session selection
-- Text-only ingestion; long polling; no external integrations
+- Capture of text messages during an explicit listening session; deterministic document IDs; Pinecone storage with hard chat/session isolation.
+- Whole-session, chronologically ordered summarization behind an exact completeness gate; refusal instead of partial results.
+- In-memory session registry: one active and one latest completed session per chat, lost on restart.
+- Offline suite and CI; live smoke tooling.
 
-## Development stages
+## P1: meaningful product evolution
 
-```text
-Stage 1 — persistent session registry
-Stage 2 — /sessions and historical session selection
-Stage 3 — structured decisions and action items
-Stage 4 — cross-session search and Q&A
-Stage 5 — exports and external integrations
-Stage 6 — rich content and voice
-Stage 7 — privacy controls and production deployment
-```
+### 1. Persistent session registry and restart recovery
 
-## 1. Persistent session registry
+Replace `InMemorySessionStore` (it already sits behind the `SessionStore` protocol) with durable storage, for example SQLite for a single process.
 
-**Goal:** replace in-memory registry with durable storage and restart recovery.
+- Restore the active and latest completed sessions after a restart, so documents already in Pinecone stay reachable.
+- Make recording and the stored count consistent with each other. Today a write that reaches Pinecone but is not counted makes a session permanently inconsistent.
+- Open question: whether a restart should resume or close an interrupted active session.
 
-| Option | Use case |
-|--------|----------|
-| SQLite | local MVP, single-process deployment |
-| PostgreSQL | production, multi-worker, webhook mode |
+### 2. Data retention and deletion lifecycle
 
-**Planned schema fields:**
+Today stored documents live until someone purges them by hand.
 
-- `chat_id`, `session_id`, `status`
-- `title`, `started_at`, `stopped_at`, `started_by`
-- `message_count`, `created_at`, `updated_at`
+- A retention period and automatic expiry of stored messages.
+- A bot-driven deletion path for a session or a chat, replacing the manual purge snippet.
+- Decide how Telegram edits and deletions reach the store, since they are not synchronized now.
 
-**Technical tasks:**
+### 3. Long-session summarization
 
-- repository layer abstracting storage backend
-- restore active/completed sessions on startup
-- transactional consistency between registry writes and Pinecone document metadata
-- migration path from current in-memory store
+Lift the 999-message limit without giving up completeness.
 
-## 2. Session history and selection
+- Loading beyond the store's 1,000-result filter cap requires a different enumeration mechanism, for example the registry keeping the document IDs of a session and fetching by ID.
+- Hierarchical (map-reduce) summarization with token-aware chunking, with the same fail-closed contract: if any chunk fails, there is no summary.
+- Proactive prompt-size accounting, so an oversized request is refused with a clear message instead of failing in the model call.
 
-**Goal:** summary for any past discussion, not only active or latest completed.
+### 4. Structured, evaluated summary output
 
-**Planned UX:**
+- A typed schema for decisions, action items (owner, deadline), unresolved questions and the recommendation, instead of free text with a prompt-enforced layout.
+- A small labeled evaluation set and rubric, so prompt changes can be compared rather than judged by eye.
 
-- `/sessions` — paginated list of recent discussions
-- inline Telegram buttons for quick selection
-- filter by date range and title
-- `/summary <session>` — re-fetch summary for a chosen session
-- pin important meetings; archive old sessions
+### 5. Access controls
 
-**Technical tasks:**
+If the bot is used outside a single trusted group: restrict who can start, stop and summarize (for example group administrators), and who may add the bot to a chat.
 
-- session list API backed by persistent registry
-- callback handlers for inline selection
-- summary resolution by explicit `session_id`
+## P2
 
-## 3. Session naming and meeting management
+- **Message semantics:** edits, replies, forwarded-author attribution and forum topics (a session per topic).
+- **Anonymous and on-behalf-of senders:** decide whether and how to record `sender_chat` messages.
+- **Exports and session history**, only if real users need them: list or select past sessions, export a summary.
+- **Deployment hardening**, only if the bot is run for real users: webhook mode, containerization, structured logs and metrics.
 
-**Planned capabilities:**
+## Maintenance
 
-- `/start_listening Meeting title`
-- auto-title from first N messages (LLM or heuristic)
-- rename session post-hoc
-- tags/categories; link to project, team, or client
-- multiple parallel Telegram topics within one group (topic-scoped sessions)
+- Run the [live Telegram acceptance](live_telegram_acceptance.md) against the current build and record the result.
+- Decide the fate of the retrieval pipeline and `RETRIEVAL_TOP_K`: keep them if a semantic-search feature is planned, otherwise remove them together with their smoke test.
 
-## 4. Structured meeting intelligence
+## Deliberately not planned
 
-**Goal:** move from free-text summary to structured, machine-readable output.
-
-**Planned fields:**
-
-- topic, participants, positions
-- decisions, action items, owners, deadlines
-- unresolved questions, risks, blockers, dependencies
-- fallback scenarios, links, contact channels
-
-**Technical approach:**
-
-- Pydantic models / structured LLM output
-- store structured result separately from raw messages
-- decision log, action-item registry
-- overdue-task tracking
-- diff between initial agreements and later changes
-
-## 5. Search and Q&A
-
-**Planned retrieval modes:**
-
-- Q&A scoped to one selected session
-- search across all discussions in a chat
-- cross-session RAG
-- example queries: when was a decision made, who owned a task, deadline changes, which meetings discussed a risk
-- compare decisions across sessions; detect contradictions
-- timeline of decisions and assignments
-
-**Technical tasks:**
-
-- query routing (session-scoped vs chat-wide vs cross-chat)
-- metadata filters + semantic retrieval
-- dedicated Q&A Haystack pipeline (see §11)
-
-## 6. Export and integrations
-
-**Planned formats:** Markdown, DOCX, PDF
-
-**Planned delivery channels (not implemented):**
-
-- email, Slack, Google Docs, Notion
-- Jira, Trello
-- corporate knowledge bases
-
-**Planned automation:**
-
-- send protocol after meeting stop (opt-in)
-- create tasks from action items
-- sync deadlines to calendar
-- notify assignees
-
-## 7. Rich content ingestion
-
-Each content type requires a separate ingestion and validation pipeline:
-
-- voice messages → transcription
-- meeting audio recordings
-- documents, photos with captions, links
-- edited/deleted Telegram messages
-- replies, threads, Telegram topics
-- attachments bound to a specific session
-
-Current MVP accepts **text only**.
-
-## 8. Privacy and data lifecycle
-
-**Planned controls:**
-
-- retention policy for messages and embeddings
-- `/delete_session`, `/delete_history`, per-chat purge
-- role-based access; summary restricted to admins or participants
-- audit log, encryption at rest, data minimization
-- participant consent for recording
-- sensitive-message exclusion
-- enterprise data-residency requirements
-
-## 9. Product UX
-
-**Planned features:**
-
-- auto-summary on `/stop_listening` (opt-in)
-- scheduled interim summaries
-- action-item reminders
-- summary styles: brief, full protocol, decisions-only, action-items-only, risks/unresolved
-- multilingual summaries; tone and detail settings
-- feedback/rating; regenerate with refined instruction
-- inline buttons reducing reliance on command memorization
-
-## 10. Production runtime
-
-**Goal:** move from homework long polling to operable production deployment.
-
-| Area | Planned upgrade |
-|------|-----------------|
-| Ingress | webhook mode instead of long polling |
-| Packaging | Docker; VPS or cloud deployment |
-| Data | PostgreSQL backing store |
-| Async | task queues, background workers |
-| Resilience | rate limits, retries, dead-letter queue |
-| Observability | health endpoint, metrics, structured logs, tracing, alerting |
-| Ops | backups, horizontal scaling |
-| Architecture | separate Telegram ingestion from AI processing |
-| Cost | OpenAI/Pinecone spend controls; cache repeated summaries |
-| Quality | load testing |
-
-## 11. Haystack architecture evolution
-
-**Planned specialized pipelines:**
-
-- summary (current, to be extended)
-- action-item extraction
-- decision extraction
-- Q&A / retrieval-augmented answers
-- document ingestion (per content type)
-
-**Planned platform capabilities:**
-
-- pipeline routing by intent
-- evaluation datasets and retrieval quality metrics
-- prompt/version management
-- Haystack component observability
-- A/B testing of prompts and retrieval settings
-
-## Alignment with README
-
-| README (product) | This document (technical) |
-|----------------|---------------------------|
-| Current limitations | Current baseline |
-| §1–§11 scaling directions | Matching sections with implementation tasks |
-| §12 development stages | Development stages |
-| User-facing scenarios | Commands, APIs, storage, pipelines |
-
-All items above are **planned**. The shipped MVP implements indexing, retrieval, summarization, in-memory sessions, and Telegram command menu only.
+Cross-session search and Q&A, third-party integrations (Slack, Jira, Notion and similar), voice transcription, scheduled summaries and reminders were in earlier drafts of this roadmap. They are removed because nothing in the project calls for them yet.
